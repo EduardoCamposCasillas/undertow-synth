@@ -1,0 +1,33 @@
+# Salidas de CMake / compilación (incluye JUCE descargado en build/_deps)
+build/
+out/
+cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+
+# Binarios sueltos
+*.vst3
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+*.obj
+
+# Herramientas descargadas (pluginval)
+tools/
+
+# IDEs y editores
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Claude Code: configuración local de cada máquina
+.claude/settings.local.json
+
+# Sistema
+Thumbs.db
+desktop.ini
+.DS_Store

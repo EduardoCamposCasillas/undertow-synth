@@ -1,0 +1,4 @@
+# Finales de línea normalizados a LF en el repositorio
+* text=auto eol=lf
+*.sln text eol=crlf
+*.bat text eol=crlf
