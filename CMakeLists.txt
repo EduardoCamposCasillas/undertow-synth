@@ -39,6 +39,7 @@ target_sources(UndertowSynth
     PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
+        Source/synth/VoiceManager.cpp
 )
 
 target_include_directories(UndertowSynth PRIVATE Source)
@@ -59,3 +60,26 @@ target_link_libraries(UndertowSynth
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+# --- Tests ---------------------------------------------------------------------
+# Ejecutable independiente de JUCE con los tests de DSP y de voces.
+# Se ejecuta con:  ctest --test-dir build -C Release --output-on-failure
+option(UNDERTOW_BUILD_TESTS "Compilar los tests unitarios" ON)
+
+if(UNDERTOW_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(UndertowTests
+        tests/DspTests.cpp
+        Source/synth/VoiceManager.cpp
+    )
+    target_include_directories(UndertowTests PRIVATE Source)
+
+    if(MSVC)
+        target_compile_options(UndertowTests PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(UndertowTests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME UndertowTests COMMAND UndertowTests)
+endif()

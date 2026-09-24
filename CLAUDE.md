@@ -54,6 +54,7 @@ para que funcionen también como material de estudio.
 ```
 cmake -B build -G "Visual Studio 17 2022" -A x64    # VS Community 2022 detectado en esta máquina
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure   # tests de DSP/voces (UndertowTests, sin JUCE)
 ```
 - CMake está en `C:\Program Files\CMake\bin` y no está en el PATH: usar la ruta completa o agregarlo.
 - El VST3 queda en `build/UndertowSynth_artefacts/Release/VST3/Undertow Synth.vst3`.
@@ -89,7 +90,7 @@ Source/
 
 ## Hoja de ruta
 - [x] Fase 1 — Proyecto base: CMake + JUCE, compila VST3 y Standalone, carga en FL, onda senoidal con MIDI.
-- [ ] Fase 2 — Polifonía y envolvente ADSR (sin clics, voice stealing correcto).
+- [x] Fase 2 — Polifonía y envolvente ADSR (sin clics, voice stealing correcto).
 - [ ] Fase 3 — Oscilador wavetable sin aliasing (mipmaps por octava, interpolación, morphing de posición).
 - [ ] Fase 4 — Filtros ZDF/TPT: LP/HP/BP 12 y 24 dB, resonancia, drive, key tracking.
 - [ ] Fase 5 — Modulación: 2 envolventes extra, LFOs sincronizados al tempo, matriz de modulación.
@@ -107,4 +108,19 @@ Fase 1 COMPLETADA (2026-09-24): CMake + JUCE 9.0.2, VST3 + Standalone, seno mono
 nota) con MIDI sample-accurate y rampa anti-clic de 5 ms. Release con 0 warnings (/W4, MSVC 19.44, VS 2022 17.14),
 pluginval strictness 10: SUCCESS (`tools/pluginval/pluginval.exe`). Probado por el usuario en FL Studio 2025: suena bien.
 Nota FL: la ruta de búsqueda de los artefactos debe estar marcada como tipo VST3 en Manage plugins.
-Siguiente: Fase 2 (polifonía + ADSR), pendiente de que el usuario la inicie.
+
+Fase 2 COMPLETADA (2026-09-24). Probada por el usuario en FL Studio: suena bien.
+- `dsp/AdsrEnvelope.h`: ADSR exponencial (tiempos exactos gracias al overshoot), attack desde el nivel actual,
+  sustain suavizado y `quickRelease` lineal de 5 ms para el robo de voces.
+- `synth/Voice.h`, `synth/VoiceManager.h/.cpp`: pool de 32 ranuras y polifonía de 1 a 16 (parámetro).
+  El robo no produce clics: fade de 5 ms mientras la nota nueva suena en otra ranura.
+  Prioridad para robar: nota soltada → sostenida por el pedal → pulsada más antigua.
+  Repetir la misma nota reutiliza su voz. Pedal de sustain CC64, CC120 (fade) y CC123 (release).
+- Parámetros APVTS (IDs en `Parameters.h`, NO cambiarlos): attack, decay, sustain, release, voices, velocity, master.
+  El estado se guarda y carga como XML.
+- GUI funcional: 7 perillas y contador de voces sonando.
+- Tests: `tests/DspTests.cpp` (ejecutable `UndertowTests`, sin JUCE): todos pasan.
+- Release con 0 warnings; pluginval strictness 10: SUCCESS.
+- Tests de afinación: las 88 teclas a 4 sample rates, peor desviación 0.0003 cents.
+
+Siguiente: Fase 3 (oscilador wavetable), pendiente de que el usuario la inicie.

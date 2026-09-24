@@ -1,11 +1,12 @@
 #pragma once
 
+#include <atomic>
+
 #include <juce_audio_processors/juce_audio_processors.h>
 
-#include "dsp/SineOscillator.h"
+#include "synth/VoiceManager.h"
 
-// Fase 1: sintetizador monofónico con una onda senoidal.
-// La polifonía y la envolvente ADSR llegan en la Fase 2.
+// Fase 2: sintetizador polifónico (senos) con envolvente ADSR de amplitud.
 class UndertowAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -34,21 +35,34 @@ public:
     const juce::String getProgramName (int) override { return {}; }
     void changeProgramName (int, const juce::String&) override {}
 
-    // Aún no hay parámetros que guardar; llegará con el AudioProcessorValueTreeState.
-    void getStateInformation (juce::MemoryBlock&) override {}
-    void setStateInformation (const void*, int) override {}
+    void getStateInformation (juce::MemoryBlock& destData) override;
+    void setStateInformation (const void* data, int sizeInBytes) override;
+
+    juce::AudioProcessorValueTreeState& getParameters() noexcept { return parameters; }
+
+    // Lo lee la GUI para mostrar cuántas voces suenan (útil para ver el voice stealing).
+    int getActiveVoiceCount() const noexcept { return activeVoiceCount.load (std::memory_order_relaxed); }
 
 private:
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+    void updateVoiceParameters() noexcept;
     void handleMidiMessage (const juce::MidiMessage& message) noexcept;
-    void renderSamples (juce::AudioBuffer<float>& buffer, int startSample, int numSamples) noexcept;
 
-    undertow::dsp::SineOscillator oscillator;
+    juce::AudioProcessorValueTreeState parameters;
 
-    // Rampa corta de amplitud. Sin ella, empezar o cortar la onda a mitad de ciclo
-    // produce un salto instantáneo que se oye como un "clic".
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> amplitude;
+    // Punteros a los valores atómicos de cada parámetro: leerlos en el hilo de audio es seguro y sin locks.
+    std::atomic<float>* attackParam = nullptr;
+    std::atomic<float>* decayParam = nullptr;
+    std::atomic<float>* sustainParam = nullptr;
+    std::atomic<float>* releaseParam = nullptr;
+    std::atomic<float>* voicesParam = nullptr;
+    std::atomic<float>* velocityParam = nullptr;
+    std::atomic<float>* masterParam = nullptr;
 
-    int currentNote = -1; // -1 = ninguna nota sonando
+    undertow::synth::VoiceManager voiceManager;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> masterGain;
+    std::atomic<int> activeVoiceCount { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UndertowAudioProcessor)
 };
