@@ -60,6 +60,8 @@ UndertowAudioProcessor::UndertowAudioProcessor()
     voicesParam = parameters.getRawParameterValue (id::voices);
     velocityParam = parameters.getRawParameterValue (id::velocity);
     masterParam = parameters.getRawParameterValue (id::master);
+    oscAWavetableParam = parameters.getRawParameterValue (id::oscAWavetable);
+    oscAPositionParam = parameters.getRawParameterValue (id::oscAPosition);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout UndertowAudioProcessor::createParameterLayout()
@@ -87,6 +89,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout UndertowAudioProcessor::crea
         juce::AudioParameterFloatAttributes().withLabel ("dB").withStringFromValueFunction ([] (float v, int) {
             return v <= minusInfinityDb ? juce::String ("-inf dB") : juce::String (v, 1) + " dB";
         })));
+
+    // Oscilador A. Por defecto "Basic Shapes" en posición 0 = seno: el sonido de la Fase 2.
+    juce::StringArray tableNames;
+    for (const auto* name : undertow::synth::WavetableBank::names)
+        tableNames.add (name);
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { id::oscAWavetable, id::versionHintOscillator }, "Osc A Wavetable", tableNames, 0));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { id::oscAPosition, id::versionHintOscillator }, "Osc A Position",
+        juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f, percentAttributes()));
 
     return layout;
 }
@@ -116,6 +129,10 @@ void UndertowAudioProcessor::updateVoiceParameters() noexcept
                                           releaseParam->load() });
     voiceManager.setPolyphony (static_cast<int> (voicesParam->load()));
     voiceManager.setVelocitySensitivity (velocityParam->load());
+
+    // Cambiar de tabla es solo cambiar un puntero a datos que ya existen: nada se reserva aquí.
+    voiceManager.setWavetable (&wavetableBank->get (static_cast<int> (oscAWavetableParam->load())));
+    voiceManager.setWavetablePosition (oscAPositionParam->load());
 }
 
 void UndertowAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)

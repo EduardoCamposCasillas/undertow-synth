@@ -189,3 +189,117 @@ Inténtalo primero; las pistas vendrán después.
 
 ### Retos completados
 - [ ] Reto Fase 2 — órgano staccato + swell invertido
+
+---
+
+## Fase 3 — Oscilador wavetable
+
+### Conceptos aprendidos
+- **El timbre son los armónicos.** Dos notas iguales suenan distintas porque cada una tiene
+  otros armónicos (múltiplos de la fundamental) y con otra fuerza. Las formas clásicas:
+  - **Seno:** solo la fundamental.
+  - **Triángulo:** solo armónicos impares (3, 5, 7…) que caen muy rápido (1/h²). Suena suave, casi un seno "con aire".
+  - **Cuadrada:** solo impares, pero caen más despacio (1/h). Suena hueca, como un clarinete o un chiptune.
+  - **Sierra:** todos los armónicos (1/h). Es la más brillante y "llena": la base de casi todos los leads, bajos y pads.
+- **Wavetable.** Es una colección de ciclos de onda ("frames"), como los fotogramas de una película.
+  El oscilador lee un ciclo con el acumulador de fase de la Fase 1: la fase (0 a 1) indica en qué punto del ciclo está.
+- **Morphing (Position).** La perilla Position elige un punto entre dos frames vecinos y los mezcla.
+  Si la mueves, el timbre cambia de forma continua. Es el corazón de los sintes wavetable (Serum, Vital).
+- **Interpolación.** La fase casi nunca cae justo sobre una muestra guardada, así que hay que calcular el valor
+  "entre" muestras. Usamos interpolación **cúbica**: 4 muestras y una curva suave. La lineal (2 muestras, una
+  recta) es más barata, pero apaga los agudos y ensucia el sonido.
+- **Nyquist y aliasing.** Con un sample rate *sr* solo se pueden representar frecuencias hasta *sr/2* (Nyquist).
+  Un armónico que pasa de ese límite no desaparece: se **refleja** hacia abajo (en *f* aparece en *sr − f*).
+  El reflejo ya no es múltiplo de la fundamental, así que suena desafinado y metálico. Además, **baja cuando la
+  nota sube**. Ese es el síntoma clásico del aliasing.
+- **Mipmaps (band-limiting).** De cada frame se guardan 11 versiones, cada una con la mitad de armónicos
+  (1024, 512… 1). Para cada nota se usa la versión más rica que no pasa del límite. Las versiones se
+  crean con una **FFT**, que convierte la onda en su lista de armónicos: se borran los que sobran y se vuelve
+  a la onda.
+- **Truco de los 20 kHz.** A 44.1/48 kHz dejamos que los armónicos lleguen hasta *sr − 20 kHz*.
+  Su reflejo cae por encima de 20 kHz y nadie lo oye. Así las notas agudas conservan más brillo.
+- **Resultado medido en los tests:** el peor aliasing está a **−87 dB** (más de 20 000 veces más débil que la nota),
+  frente a **−12 dB** de una sierra "ingenua" sin mipmaps.
+- **Normalización.** Todos los frames tienen el mismo *pico*, pero no el mismo *volumen percibido*:
+  una cuadrada suena más fuerte que un seno con el mismo pico, porque tiene más energía.
+
+### Qué hace cada control al sonido
+| Control | Qué se oye | En el osciloscopio / analizador |
+|---|---|---|
+| **Wavetable** | Elige la "familia" de timbres. Cambiarla con una nota sonando hace un fundido de 5 ms, sin clic. | Cambia la forma que se ve en el visor del plugin. |
+| **Position** en *Basic Shapes* | 0 % seno (redondo, sin brillo) → 33 % triángulo (suave, flauta) → 67 % sierra (brillante, zumbido) → 100 % cuadrada (hueca, 8 bits). | En el EQ aparecen primero los armónicos impares (triángulo) y luego todos (sierra); en la cuadrada desaparecen los pares. |
+| **Position** en *Pulse Width* | 0 % cuadrada → 100 % pulso muy fino (3 %). Al estrecharse suena más nasal, fino y "de caña". | En Wave Candy el tramo alto se estrecha. En el EQ aparecen "huecos" regulares entre armónicos (en la cuadrada son los pares). |
+| **Position** en *Harmonic Build* | Suma los armónicos uno a uno (de 1 a 64). Se parece a "abrir" un filtro, pero por escalones. | Se ve cada línea nueva del espectro aparecer a su múltiplo de la fundamental. |
+| **Position** en *Hard Sync* | 0 % sierra normal → 100 % sync de 8×. Aparece un pico de brillo que "canta" y sube, como una voz metálica. | El armónico más fuerte se desplaza hacia arriba mientras la fundamental no cambia. |
+| **Position** en *Vowels* | Recorre las vocales A → E → I → O → U (0, 25, 50, 75 y 100 %). Suena a "coro" o a voz robótica, sobre todo en graves y medios. | En el EQ se ven 2–3 "montañas" (formantes) que se desplazan. |
+
+### Ejercicio de escucha guiado
+1. Mismo montaje que en la Fase 1: **Fruity Parametric EQ 2** (como analizador) y **Wave Candy** en el canal
+   del Mixer. Attack 5 ms, Sustain 100 %, Release 150 ms.
+2. **Los 4 timbres básicos:** con *Basic Shapes*, mantén un **C4** (130.8 Hz) y lleva Position a 0, 33, 67 y 100 %.
+   En el EQ cuenta las líneas: 1 (seno), impares que caen rápido (triángulo), todas (sierra), impares fuertes (cuadrada).
+   En el visor del plugin verás las cuatro formas.
+3. **Morph continuo:** barre Position despacio de 0 a 100 %. No debería haber saltos, clics ni "escalones" de zipper.
+4. **Construir un timbre:** con *Harmonic Build*, mantén un **C4** y sube Position poco a poco. Escucha cómo cada
+   armónico nuevo cambia el color: con 2–3 el sonido "se abre", con 5–8 parece un órgano y con 30 o más ya es una sierra.
+5. **Aliasing (lo que NO debe pasar):** con la sierra (Position 67 %), toca una escala cromática lenta que suba de
+   **C8** a **C10**. Cada nota debe sonar como un silbido limpio, sin tonos extra que **bajen** mientras la escala
+   sube. Si FL está a 44.1 kHz, repite a 96 kHz (Options → Audio settings) y compara: debería sonar igual.
+6. **Cambio de tabla en vivo:** mantén un acorde y cambia la tabla en el selector. El timbre cambia al instante,
+   sin clic.
+7. **Movimiento:** clic derecho en Position → *Create automation clip*. Dibuja una rampa de 4 compases con
+   *Vowels* o *Hard Sync*. Así se oye lo que hace especial a un wavetable: **el timbre se mueve**.
+8. **Artefactos a buscar:** clics al cambiar de tabla, zipper al mover Position rápido y tonos desafinados en las
+   notas muy agudas. En las 2 octavas más agudas quizá notes que alguna nota es un poco más oscura que su
+   vecina. Es el cambio de mipmap: queda casi todo por encima de 12 kHz y es normal.
+
+### Recetas
+**Bajo de sierra clásico (house / synthwave)**
+1. *Basic Shapes*, Position **67 %** (sierra): tiene todos los armónicos, así que se oye incluso en altavoces pequeños.
+   Es la solución "de verdad" al problema del sub de la Fase 1.
+2. Voices **1**: un bajo casi siempre es monofónico. Así dos notas no se solapan y no embarran los graves.
+3. Attack **2 ms**, Decay **300 ms**, Sustain **60 %**, Release **60 ms**: golpe inicial, cuerpo después y un corte
+   limpio para dejar sitio al bombo.
+4. Velocity **30 %**: algo de expresión, sin que el volumen del bajo salte.
+5. Piano Roll: corcheas entre **C3 (65 Hz)** y **C4 (131 Hz)**.
+6. *Por qué funciona:* la sierra es brillante y "zumba". Sin filtro todavía es algo áspera: en la Fase 4 aprenderás
+   a domarla con un low-pass, que es exactamente lo que hacen los bajos de synthwave.
+
+**Pad de "coro" que se mueve**
+1. *Vowels*, Position **0 %** (vocal A).
+2. Attack **800 ms**, Decay **1 s**, Sustain **80 %**, Release **2.5 s**, Voices **8**, Velocity **20 %** (la receta de pad de la Fase 2).
+3. Acordes largos entre **C4 y C6** (4 compases cada uno).
+4. Automatiza Position de 0 % a 100 % a lo largo de 8 compases (clip de automatización).
+5. *Por qué funciona:* los formantes son lo que el oído asocia con una **voz**. Al moverlos, el pad "dice" vocales
+   y nunca suena estático. Por encima de C6 los formantes suben tanto que se pierde el efecto vocal: por eso se
+   queda en el registro medio.
+
+### Reto sin receta
+Recrea el **lead de una consola de 8 bits (NES / Game Boy)** para una melodía rápida a 150 BPM.
+Esas consolas no tenían una sierra: usaban **ondas de pulso** con anchos fijos de **50 %, 25 % y 12.5 %**, y el
+cambio de ancho era parte del "instrumento". El sonido debe ser seco, sin cola y con el mismo volumen en todas
+las notas. Extra: consigue que la primera nota de cada frase suene más "fina" que las demás.
+Inténtalo primero; las pistas vendrán después.
+
+### Vocabulario
+- **Wavetable.** Colección de ciclos de onda que se recorre con una perilla.
+  *Ejemplo:* los bajos "que hablan" del dubstep (Skrillex) se hacen moviendo la posición de un wavetable.
+- **Frame.** Uno de los ciclos guardados en el wavetable.
+- **Morphing.** Transición continua entre dos timbres. *Ejemplo:* un pad que pasa de oscuro a brillante sin filtro.
+- **Sierra / cuadrada / triángulo / pulso.** Las formas de onda clásicas de los sintes analógicos.
+  *Ejemplo:* la sierra es el sonido de los leads de trance; la cuadrada, el de la música de videojuegos antiguos.
+- **Ancho de pulso (PWM si se modula).** Proporción del ciclo en la que la onda está "arriba".
+  *Ejemplo:* los pads y bajos de los Juno de Roland en los 80.
+- **Hard sync.** Un oscilador que se reinicia al ritmo de otro y crea armónicos resonantes que se mueven.
+  *Ejemplo:* el lead de "Kiss on My List" (Hall & Oates) o muchos leads de electro.
+- **Formante.** Zona del espectro reforzada por una resonancia; define las vocales.
+  *Ejemplo:* un talk box o el efecto "wah" de una guitarra.
+- **Nyquist.** La frecuencia máxima representable: la mitad del sample rate (22.05 kHz a 44.1 kHz).
+- **Aliasing.** Frecuencias falsas que aparecen cuando un armónico pasa de Nyquist y se refleja hacia abajo.
+  *Ejemplo:* el "brillo sucio" de algunos plugins baratos en notas agudas, o el sonido *lo-fi* buscado a propósito en un bitcrusher.
+- **Band-limited.** Una señal a la que se le quitaron los armónicos que causarían aliasing.
+- **Espectro.** Lo que muestra el analizador: qué frecuencias hay y con qué fuerza.
+- **Interpolación.** Calcular un valor entre dos muestras conocidas.
+
+### Retos completados
+- [ ] Reto Fase 3 — lead de 8 bits

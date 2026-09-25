@@ -5,8 +5,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "synth/VoiceManager.h"
+#include "synth/WavetableBank.h"
 
-// Fase 2: sintetizador polifónico (senos) con envolvente ADSR de amplitud.
+// Fase 3: sintetizador polifónico con oscilador wavetable y envolvente ADSR de amplitud.
 class UndertowAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -43,6 +44,9 @@ public:
     // Lo lee la GUI para mostrar cuántas voces suenan (útil para ver el voice stealing).
     int getActiveVoiceCount() const noexcept { return activeVoiceCount.load (std::memory_order_relaxed); }
 
+    // La GUI dibuja la forma de onda leyendo el mismo banco (es inmutable: leerlo desde otro hilo es seguro).
+    const undertow::synth::WavetableBank& getWavetableBank() const noexcept { return *wavetableBank; }
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
@@ -59,6 +63,11 @@ private:
     std::atomic<float>* voicesParam = nullptr;
     std::atomic<float>* velocityParam = nullptr;
     std::atomic<float>* masterParam = nullptr;
+    std::atomic<float>* oscAWavetableParam = nullptr;
+    std::atomic<float>* oscAPositionParam = nullptr;
+
+    // Un solo banco para todas las instancias del plugin: se crea con la primera y se libera con la última.
+    juce::SharedResourcePointer<undertow::synth::WavetableBank> wavetableBank;
 
     undertow::synth::VoiceManager voiceManager;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> masterGain;

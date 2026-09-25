@@ -26,6 +26,8 @@ public:
     void setEnvelopeParameters (const dsp::AdsrParameters& parameters) noexcept;
     void setPolyphony (int numVoices) noexcept;
     void setVelocitySensitivity (float amount) noexcept; // 0 = ignora la velocity, 1 = sensibilidad total
+    void setWavetable (const dsp::Wavetable* table) noexcept; // sin tabla, las voces no suenan
+    void setWavetablePosition (float position) noexcept;      // 0..1, recorre los frames de la tabla
 
     void noteOn (int midiNote, float velocity) noexcept;
     void noteOff (int midiNote) noexcept;

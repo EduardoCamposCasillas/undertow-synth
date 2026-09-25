@@ -4,12 +4,13 @@
 #include <cstdint>
 
 #include "dsp/AdsrEnvelope.h"
-#include "dsp/SineOscillator.h"
+#include "dsp/Pitch.h"
+#include "dsp/WavetableOscillator.h"
 
 namespace undertow::synth
 {
 
-// Una voz = un oscilador + una envolvente. El VoiceManager decide qué nota toca cada una.
+// Una voz = un oscilador wavetable + una envolvente. El VoiceManager decide qué nota toca cada una.
 class Voice
 {
 public:
@@ -24,13 +25,15 @@ public:
     }
 
     void setEnvelopeParameters (const dsp::AdsrParameters& parameters) noexcept { envelope.setParameters (parameters); }
+    void setWavetable (const dsp::Wavetable* table) noexcept { oscillator.setWavetable (table); }
+    void setWavetablePosition (float position) noexcept { oscillator.setPosition (position); }
 
     void start (int midiNote, float gain, std::uint64_t order) noexcept
     {
         if (! envelope.isActive())
         {
             // Voz en silencio: empezar en fase 0 hace que cada nota arranque igual.
-            oscillator.resetPhase();
+            oscillator.reset();
             currentGain = gain;
         }
         // Si la voz ya sonaba (redisparo de la misma nota) NO se reinicia la fase:
@@ -95,7 +98,7 @@ public:
 private:
     static constexpr double gainSmoothingSeconds = 0.005;
 
-    dsp::SineOscillator oscillator;
+    dsp::WavetableOscillator oscillator;
     dsp::AdsrEnvelope envelope;
 
     int noteNumber = -1;

@@ -12,6 +12,12 @@ inline constexpr const char* voices = "voices";
 inline constexpr const char* velocity = "velocity";
 inline constexpr const char* master = "master";
 
+// Fase 3: oscilador A. Llevan el prefijo "oscA" porque en la Fase 6 llegará un oscilador B.
+inline constexpr const char* oscAWavetable = "oscAWavetable";
+inline constexpr const char* oscAPosition = "oscAPosition";
+
 // Versión con la que se introdujeron los parámetros (la usa VST3 para compatibilidad hacia atrás).
 inline constexpr int versionHint = 1;
+// Los parámetros añadidos en una versión posterior llevan un número mayor.
+inline constexpr int versionHintOscillator = 2;
 } // namespace undertow::params

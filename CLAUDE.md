@@ -91,7 +91,7 @@ Source/
 ## Hoja de ruta
 - [x] Fase 1 — Proyecto base: CMake + JUCE, compila VST3 y Standalone, carga en FL, onda senoidal con MIDI.
 - [x] Fase 2 — Polifonía y envolvente ADSR (sin clics, voice stealing correcto).
-- [ ] Fase 3 — Oscilador wavetable sin aliasing (mipmaps por octava, interpolación, morphing de posición).
+- [x] Fase 3 — Oscilador wavetable sin aliasing (mipmaps por octava, interpolación, morphing de posición).
 - [ ] Fase 4 — Filtros ZDF/TPT: LP/HP/BP 12 y 24 dB, resonancia, drive, key tracking.
 - [ ] Fase 5 — Modulación: 2 envolventes extra, LFOs sincronizados al tempo, matriz de modulación.
 - [ ] Fase 6 — Segundo oscilador, sub, ruido, unison (hasta 16 voces) con detune y ancho estéreo.
@@ -123,4 +123,23 @@ Fase 2 COMPLETADA (2026-09-24). Probada por el usuario en FL Studio: suena bien.
 - Release con 0 warnings; pluginval strictness 10: SUCCESS.
 - Tests de afinación: las 88 teclas a 4 sample rates, peor desviación 0.0003 cents.
 
-Siguiente: Fase 3 (oscilador wavetable), pendiente de que el usuario la inicie.
+Fase 3 COMPLETADA (2026-09-24). Probada por el usuario en FL Studio.
+- `dsp/Fft.h`: FFT radix-2 propia (solo fuera del hilo de audio). `dsp/Pitch.h`: midiNoteToHz (SineOscillator eliminado).
+- `dsp/Wavetable.h/.cpp`: tabla inmutable construida desde espectros (`fromSpectra`) o ciclos muestreados
+  (`fromWaveforms`). 11 mipmaps por octava (1024 → 1 armónicos); tamaño por nivel = max(2048, 16·armónicos)
+  → 16384/8192/4096/2048…; normalización de pico por frame (escala del nivel 0 para todos los niveles).
+- `dsp/WavetableOscillator.h`: interpolación cúbica Catmull-Rom, morph lineal entre frames, Position suavizada
+  (10 ms), fundido de 5 ms al cambiar de tabla, `reset()` al empezar nota desde silencio. Límite de armónicos:
+  sr − 20 kHz a 44.1/48 kHz (el reflejo cae > 20 kHz), Nyquist a 88.2/96 kHz.
+- `synth/WavetableBank`: 5 tablas de fábrica generadas por código (Basic Shapes 4 frames; Pulse Width, Harmonic
+  Build, Hard Sync, Vowels de 64 frames). ~47 MB, ~0.4 s; compartido entre instancias (`SharedResourcePointer`).
+  El orden de `names` es parte del estado guardado: solo añadir al final.
+- Parámetros nuevos: oscAWavetable (choice), oscAPosition (0..1), versionHint 2. Por defecto = seno (sonido de Fase 2).
+- GUI: grupo "Oscilador A" con selector, perilla Position y visor de la forma de onda (`gui/WavetableDisplay.h`).
+- Tests: peor alias medido < 20 kHz: −87 dB (44.1/48 kHz) y −92 dB (88.2/96 kHz) con pulso 3 % y sync; sierra
+  ingenua: −12 dB. Armónicos altos conservan su nivel (0.00 dB). Morph y cambio de tabla sin clics.
+- Release con 0 warnings (build limpio); pluginval strictness 10: SUCCESS.
+- Límite conocido: el paso de mipmap es por octava; con pitch bend/glide (Fase 5) podría oírse un leve salto de
+  brillo al cruzar un límite. Solución prevista: mezclar dos niveles vecinos.
+
+Siguiente: Fase 4 (filtros ZDF/TPT), pendiente de que el usuario la inicie.

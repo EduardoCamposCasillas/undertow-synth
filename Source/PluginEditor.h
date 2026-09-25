@@ -1,13 +1,16 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <memory>
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "gui/WavetableDisplay.h"
+
 class UndertowAudioProcessor;
 
-// GUI funcional de la Fase 2: perillas para la envolvente y la voz. La GUI profesional llega en la Fase 9.
+// GUI funcional: oscilador, envolvente y voz. La GUI profesional llega en la Fase 9.
 class UndertowAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -32,6 +35,16 @@ private:
 
     UndertowAudioProcessor& processor;
     std::array<Knob, numEnvelopeKnobs + numVoiceKnobs> knobs;
+
+    juce::GroupComponent oscillatorGroup { {}, "Oscilador A" };
+    juce::Label wavetableLabel;
+    juce::ComboBox wavetableBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> wavetableAttachment;
+    Knob positionKnob;
+    undertow::gui::WavetableDisplay wavetableDisplay;
+    std::atomic<float>* wavetableParam = nullptr;
+    std::atomic<float>* positionParam = nullptr;
+
     juce::GroupComponent envelopeGroup { {}, "Envolvente de amplitud" };
     juce::GroupComponent voiceGroup { {}, "Voz" };
     juce::Label activeVoicesLabel;

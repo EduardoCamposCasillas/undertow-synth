@@ -31,6 +31,19 @@ void VoiceManager::setVelocitySensitivity (float amount) noexcept
     velocitySensitivity = std::clamp (amount, 0.0f, 1.0f);
 }
 
+void VoiceManager::setWavetable (const dsp::Wavetable* table) noexcept
+{
+    for (auto& voice : voices)
+        voice.setWavetable (table);
+}
+
+void VoiceManager::setWavetablePosition (float position) noexcept
+{
+    // Cada voz suaviza la posición por su cuenta; en la Fase 5 cada voz tendrá además su propia modulación.
+    for (auto& voice : voices)
+        voice.setWavetablePosition (position);
+}
+
 float VoiceManager::velocityToGain (float velocity) const noexcept
 {
     // Curva cuadrática: velocity 64 (~0.5) da 0.25 (≈ -12 dB). Una curva lineal comprime

@@ -39,7 +39,9 @@ target_sources(UndertowSynth
     PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
+        Source/dsp/Wavetable.cpp
         Source/synth/VoiceManager.cpp
+        Source/synth/WavetableBank.cpp
 )
 
 target_include_directories(UndertowSynth PRIVATE Source)
@@ -71,7 +73,9 @@ if(UNDERTOW_BUILD_TESTS)
 
     add_executable(UndertowTests
         tests/DspTests.cpp
+        Source/dsp/Wavetable.cpp
         Source/synth/VoiceManager.cpp
+        Source/synth/WavetableBank.cpp
     )
     target_include_directories(UndertowTests PRIVATE Source)
 
