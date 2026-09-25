@@ -31,3 +31,14 @@ tools/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Proyectos y audio de prueba de FL Studio (pueden incluir samples con copyright)
+*.flp
+*.wav
+*.mp3
+*.zip
+
+# Credenciales o configuración privada
+.env
+*.pem
+*.key
