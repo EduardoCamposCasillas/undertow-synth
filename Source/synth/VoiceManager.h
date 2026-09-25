@@ -30,6 +30,13 @@ public:
     void setWavetablePosition (float position) noexcept;      // 0..1, recorre los frames de la tabla
     void setFilterSettings (const FilterSettings& settings) noexcept;
 
+    // Fase 5: envolventes 2 y 3, LFOs y rutas de la matriz. Se llama una vez por bloque.
+    void setModulationSettings (const ModulationSettings& settings) noexcept;
+    // Tempo y posición del host, al principio de cada bloque (para los LFO sincronizados).
+    void setTransport (const Transport& transport) noexcept;
+    void setModWheel (float value) noexcept { modWheel = value; }     // 0..1
+    void setAftertouch (float value) noexcept { aftertouch = value; } // 0..1
+
     void noteOn (int midiNote, float velocity) noexcept;
     void noteOff (int midiNote) noexcept;
     void setSustainPedal (bool isDown) noexcept;
@@ -41,14 +48,27 @@ public:
     [[nodiscard]] int getNumActiveVoices() const noexcept;
     [[nodiscard]] const Voice& getVoice (int index) const noexcept { return voices[static_cast<size_t> (index)]; }
 
+    // Fase del LFO para dibujarla en la GUI: la de la nota más reciente que suena, o la del reloj común.
+    [[nodiscard]] double getLfoDisplayPhase (int lfo) const noexcept;
+    // Ciclos por muestra del LFO con los ajustes y el tempo actuales.
+    [[nodiscard]] double getLfoIncrement (int lfo) const noexcept { return lfoIncrements[static_cast<size_t> (lfo)]; }
+
 private:
     [[nodiscard]] int countPlayingVoices() const noexcept;
     [[nodiscard]] Voice* findVoiceToSteal() noexcept;
     [[nodiscard]] Voice& findFreeSlot() noexcept;
     [[nodiscard]] float velocityToGain (float velocity) const noexcept;
+    void updateLfoIncrements() noexcept;
 
     std::array<Voice, voicePoolSize> voices;
     FilterSettings filterSettings;
+    ModulationSettings modulation;
+    Transport transport;
+    double sampleRate = 44100.0;
+    std::array<double, numLfos> lfoIncrements {};
+    std::array<dsp::LfoPhase, numLfos> freeClocks {}; // reloj común de los LFO en modo Free
+    float modWheel = 0.0f;
+    float aftertouch = 0.0f;
     int polyphony = 8;
     float velocitySensitivity = 0.5f;
     bool sustainPedalDown = false;

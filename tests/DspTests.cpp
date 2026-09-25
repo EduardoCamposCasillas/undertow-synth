@@ -6,15 +6,18 @@
 #include <cmath>
 #include <chrono>
 #include <complex>
+#include <cstdint>
 #include <cstdio>
 #include <numbers>
 #include <random>
+#include <utility>
 #include <vector>
 
 #include "dsp/AdsrEnvelope.h"
 #include "dsp/Fft.h"
 #include "dsp/Filter.h"
 #include "dsp/WavetableOscillator.h"
+#include "dsp/Lfo.h"
 #include "synth/VoiceManager.h"
 #include "synth/WavetableBank.h"
 
@@ -1059,6 +1062,427 @@ void testFilterCpuCost()
         std::printf ("  filtro %s: %.1f %% de un núcleo\n", enabled ? "on " : "off", 100.0 * seconds / 5.0);
     }
 }
+
+// --- Fase 5: LFOs, envolventes de modulación y matriz ------------------------------------------
+
+using undertow::dsp::Lfo;
+using undertow::dsp::LfoShape;
+using undertow::synth::LfoMode;
+using undertow::synth::LfoSettings;
+using undertow::synth::ModDestination;
+using undertow::synth::ModSource;
+using undertow::synth::ModulationSettings;
+using undertow::synth::Transport;
+
+void testLfoShapes()
+{
+    std::printf ("Formas del LFO en fases clave\n");
+
+    const auto at = [] (LfoShape shape, double phase) { return Lfo::shapeValue (shape, phase, 0.0f); };
+    const auto near = [] (float a, float b) { return std::abs (a - b) < 1.0e-6f; };
+
+    CHECK (near (at (LfoShape::sine, 0.0), 0.0f));
+    CHECK (near (at (LfoShape::sine, 0.25), 1.0f));
+    CHECK (near (at (LfoShape::sine, 0.75), -1.0f));
+    CHECK (near (at (LfoShape::triangle, 0.0), 0.0f));
+    CHECK (near (at (LfoShape::triangle, 0.25), 1.0f));
+    CHECK (near (at (LfoShape::triangle, 0.5), 0.0f));
+    CHECK (near (at (LfoShape::triangle, 0.75), -1.0f));
+    CHECK (near (at (LfoShape::sawUp, 0.0), -1.0f));
+    CHECK (near (at (LfoShape::sawUp, 0.5), 0.0f));
+    CHECK (near (at (LfoShape::sawDown, 0.0), 1.0f));
+    CHECK (near (at (LfoShape::square, 0.25), 1.0f));
+    CHECK (near (at (LfoShape::square, 0.75), -1.0f));
+}
+
+void testLfoRateIsExact()
+{
+    std::printf ("El LFO hace exactamente los ciclos pedidos (3 Hz durante 10 s, 4 sample rates)\n");
+
+    for (const double sr : sampleRates)
+    {
+        Lfo lfo;
+        lfo.reset (1);
+        const double increment = 3.0 / sr;
+        int wraps = 0;
+        double previous = 0.0;
+        for (int i = 0; i < static_cast<int> (10.0 * sr); ++i)
+        {
+            lfo.advance (increment);
+            if (lfo.getPhase() < previous)
+                ++wraps;
+            previous = lfo.getPhase();
+        }
+        const double cycles = wraps + lfo.getPhase();
+        CHECK (std::abs (cycles - 30.0) < 1.0e-6);
+    }
+}
+
+void testLfoOneShot()
+{
+    std::printf ("LFO One Shot: un solo ciclo y se queda en el valor final\n");
+
+    Lfo lfo;
+    lfo.setShape (LfoShape::sawUp);
+    lfo.setOneShot (true);
+    lfo.reset (1);
+    for (int i = 0; i < 1500; ++i)
+        lfo.advance (1.0 / 1000.0);
+    CHECK (lfo.getPhase() == 1.0);
+    CHECK (lfo.getValue() == 1.0f);
+    for (int i = 0; i < 5000; ++i)
+        lfo.advance (1.0 / 1000.0);
+    CHECK (lfo.getValue() == 1.0f);
+}
+
+void testSampleAndHold()
+{
+    std::printf ("Sample & Hold: constante dentro de cada ciclo, distinto entre ciclos, repetible\n");
+
+    const auto sequence = [] (std::uint32_t seed) {
+        Lfo lfo;
+        lfo.setShape (LfoShape::sampleAndHold);
+        lfo.reset (seed);
+        std::vector<float> values;
+        bool constantWithinCycle = true;
+        for (int cycle = 0; cycle < 200; ++cycle)
+        {
+            const float first = lfo.getValue();
+            for (int i = 0; i < 100; ++i)
+            {
+                constantWithinCycle = constantWithinCycle && lfo.getValue() == first;
+                lfo.advance (0.01);
+            }
+            values.push_back (first);
+        }
+        CHECK (constantWithinCycle);
+        return values;
+    };
+
+    const auto a = sequence (42);
+    const auto b = sequence (42);
+    const auto c = sequence (43);
+    CHECK (a == b);
+    CHECK (a != c);
+
+    double mean = 0.0;
+    int changes = 0;
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        CHECK (a[i] >= -1.0f && a[i] <= 1.0f);
+        mean += a[i];
+        if (i > 0 && a[i] != a[i - 1])
+            ++changes;
+    }
+    mean /= static_cast<double> (a.size());
+    std::printf ("  media %.3f, cambios %d de %zu\n", mean, changes, a.size() - 1);
+    CHECK (std::abs (mean) < 0.15);
+    CHECK (changes == static_cast<int> (a.size()) - 1);
+}
+
+void testTempoSyncRates()
+{
+    std::printf ("LFO sincronizado: la velocidad sale del tempo\n");
+
+    VoiceManager manager;
+    prepareManager (manager, 48000.0);
+    ModulationSettings settings;
+    settings.lfos[0] = { LfoShape::sine, LfoMode::retrigger, true, 2.0f, 5 };   // 1/4
+    settings.lfos[1] = { LfoShape::sine, LfoMode::retrigger, true, 2.0f, 11 };  // 1/8 T
+    manager.setModulationSettings (settings);
+    manager.setTransport ({ 140.0, 0.0, false, false });
+
+    // 140 BPM: una negra = 60/140 s -> 1/4 = 2.333 Hz; un tresillo de corchea dura 1/3 de negra -> 7 Hz.
+    CHECK (std::abs (manager.getLfoIncrement (0) * 48000.0 - 140.0 / 60.0) < 1.0e-9);
+    CHECK (std::abs (manager.getLfoIncrement (1) * 48000.0 - 7.0) < 1.0e-9);
+
+    settings.lfos[0].tempoSync = false;
+    settings.lfos[0].rateHz = 0.5f;
+    manager.setModulationSettings (settings);
+    CHECK (std::abs (manager.getLfoIncrement (0) * 48000.0 - 0.5) < 1.0e-9);
+}
+
+void testFreeModeFollowsSongPosition()
+{
+    std::printf ("Modo Free + Sync: la fase sale de la posición de la canción\n");
+
+    VoiceManager manager;
+    prepareManager (manager, 48000.0);
+    ModulationSettings settings;
+    settings.lfos[0] = { LfoShape::sine, LfoMode::free, true, 2.0f, 5 }; // 1/4: un ciclo por negra
+    settings.lfos[1] = { LfoShape::sine, LfoMode::free, true, 2.0f, 3 }; // 1 bar: un ciclo cada 4 negras
+    manager.setModulationSettings (settings);
+
+    manager.setTransport ({ 120.0, 10.25, true, true });
+    CHECK (std::abs (manager.getLfoDisplayPhase (0) - 0.25) < 1.0e-9);
+    CHECK (std::abs (manager.getLfoDisplayPhase (1) - 0.5625) < 1.0e-9); // 10.25 / 4 = 2.5625
+
+    // 12000 muestras a 48 kHz y 120 BPM = 0.25 s = media negra.
+    renderSilently (manager, 12000);
+    CHECK (std::abs (manager.getLfoDisplayPhase (0) - 0.75) < 1.0e-9);
+}
+
+void testFreeVersusRetrigger()
+{
+    std::printf ("Free: todas las voces en fase. Retrigger: cada nota empieza su ciclo\n");
+
+    for (const auto mode : { LfoMode::free, LfoMode::retrigger })
+    {
+        VoiceManager manager;
+        prepareManager (manager, 48000.0);
+        manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
+        ModulationSettings settings;
+        settings.lfos[0] = { LfoShape::sine, mode, false, 3.0f, 5 };
+        manager.setModulationSettings (settings);
+
+        manager.noteOn (60, 1.0f);
+        renderSilently (manager, 1000);
+        manager.noteOn (64, 1.0f);
+        renderSilently (manager, 7);
+
+        const double first = findVoice (manager, 60)->getLfoPhase (0);
+        const double second = findVoice (manager, 64)->getLfoPhase (0);
+        const double increment = 3.0 / 48000.0;
+        if (mode == LfoMode::free)
+            CHECK (std::abs (first - second) < 1.0e-12);
+        else
+        {
+            CHECK (std::abs (first - 1007 * increment) < 1.0e-9);
+            CHECK (std::abs (second - 7 * increment) < 1.0e-9);
+        }
+    }
+}
+
+void testKeyToCutoffEqualsKeyTracking()
+{
+    std::printf ("Key -> Cutoff al 50 %% suena igual que el key tracking al 100 %%\n");
+
+    for (const int note : { 36, 60, 84 })
+    {
+        const auto render = [note] (bool viaMatrix) {
+            VoiceManager manager;
+            manager.prepare (48000.0);
+            manager.setWavetable (&factoryBank().get (0));
+            manager.setWavetablePosition (2.0f / 3.0f);
+            manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
+            manager.setFilterSettings ({ true, { FilterType::lowPass, FilterSlope::db24, 500.0f, 0.3f, 0.0f },
+                                         viaMatrix ? 0.0f : 1.0f });
+            ModulationSettings settings;
+            if (viaMatrix)
+                settings.slots[0] = { ModSource::key, ModDestination::filterCutoff, 0.5f };
+            manager.setModulationSettings (settings);
+            manager.noteOn (note, 1.0f);
+            std::vector<float> signal (4800, 0.0f);
+            manager.render (signal.data(), static_cast<int> (signal.size()));
+            return signal;
+        };
+
+        const auto a = render (false);
+        const auto b = render (true);
+        float maxDifference = 0.0f;
+        for (size_t i = 0; i < a.size(); ++i)
+            maxDifference = std::max (maxDifference, std::abs (a[i] - b[i]));
+        CHECK (maxDifference < 1.0e-4f);
+    }
+}
+
+void testPitchModulation()
+{
+    std::printf ("Mod Wheel -> Pitch: +12 semitonos con amount 50 %% y +1 semitono con 1/24\n");
+
+    for (const auto& [amount, semitones] : { std::pair { 0.5f, 12.0 }, std::pair { 1.0f / 24.0f, 1.0 } })
+    {
+        VoiceManager manager;
+        prepareManager (manager, 48000.0);
+        manager.setEnvelopeParameters ({ 0.001f, 0.001f, 1.0f, 0.1f });
+        ModulationSettings settings;
+        settings.slots[0] = { ModSource::modWheel, ModDestination::oscAPitch, amount };
+        manager.setModulationSettings (settings);
+        manager.setModWheel (1.0f);
+        manager.noteOn (57, 1.0f); // A4 de FL, 220 Hz
+
+        renderSilently (manager, 4800);
+        std::vector<float> signal (48000, 0.0f);
+        manager.render (signal.data(), static_cast<int> (signal.size()));
+        const double cents = centsBetween (measureFrequency (signal, 48000.0), 220.0 * std::exp2 (semitones / 12.0));
+        std::printf ("  %+.0f semitonos: desviación %.4f cents\n", semitones, cents);
+        CHECK (std::abs (cents) < 0.05);
+    }
+}
+
+void testVibratoRange()
+{
+    std::printf ("LFO -> Pitch (vibrato): el tono oscila exactamente ±1 semitono\n");
+
+    VoiceManager manager;
+    prepareManager (manager, 48000.0);
+    manager.setEnvelopeParameters ({ 0.001f, 0.001f, 1.0f, 0.1f });
+    ModulationSettings settings;
+    settings.lfos[0] = { LfoShape::sine, LfoMode::retrigger, false, 5.0f, 5 };
+    settings.slots[0] = { ModSource::lfo1, ModDestination::oscAPitch, 1.0f / 24.0f };
+    manager.setModulationSettings (settings);
+    manager.noteOn (69, 1.0f); // A5 de FL, 440 Hz
+
+    double lowest = 1.0e9, highest = 0.0;
+    for (int block = 0; block < 48000 / 16; ++block)
+    {
+        renderSilently (manager, 16);
+        const double hz = findVoice (manager, 69)->getOscillatorFrequency();
+        lowest = std::min (lowest, hz);
+        highest = std::max (highest, hz);
+    }
+    const double upCents = centsBetween (highest, 440.0);
+    const double downCents = centsBetween (lowest, 440.0);
+    std::printf ("  arriba %+.2f cents, abajo %+.2f cents\n", upCents, downCents);
+    CHECK (std::abs (upCents - 100.0) < 1.0);
+    CHECK (std::abs (downCents + 100.0) < 1.0);
+}
+
+void testEnvelopeSweepsCutoff()
+{
+    std::printf ("Env 2 -> Cutoff: el filtro se abre 5 octavas en el attack y vuelve en el decay\n");
+
+    VoiceManager manager;
+    prepareManager (manager, 48000.0);
+    manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
+    manager.setFilterSettings ({ true, { FilterType::lowPass, FilterSlope::db24, 200.0f, 0.0f, 0.0f }, 0.0f });
+    ModulationSettings settings;
+    settings.envelope2 = { 0.001f, 0.2f, 0.0f, 0.1f };
+    settings.slots[0] = { ModSource::env2, ModDestination::filterCutoff, 0.5f }; // +5 octavas = ×32
+    manager.setModulationSettings (settings);
+    manager.noteOn (48, 1.0f);
+
+    float peak = 0.0f;
+    int peakSample = 0;
+    for (int i = 0; i < 480; ++i) // primeros 10 ms
+    {
+        renderSilently (manager, 1);
+        const float cutoff = findVoice (manager, 48)->getFilterCutoffHz();
+        if (cutoff > peak)
+        {
+            peak = cutoff;
+            peakSample = i;
+        }
+    }
+    renderSilently (manager, 48000);
+    const float settled = findVoice (manager, 48)->getFilterCutoffHz();
+    std::printf ("  pico %.0f Hz a los %.1f ms; tras 1 s: %.1f Hz\n", static_cast<double> (peak), peakSample / 48.0,
+                 static_cast<double> (settled));
+    CHECK (peak > 5800.0f && peak <= 6400.5f);
+    CHECK (peakSample < 144); // < 3 ms: el suavizado de 1 ms no frena un attack de 1 ms
+    CHECK (std::abs (settled - 200.0f) < 1.0f);
+}
+
+void testModulationIsClickFree()
+{
+    std::printf ("Modulación con saltos (LFO cuadrado, S&H, rutas que cambian) sin clics\n");
+
+    // Seno de 110 Hz a amplitud 0.25: cambia como mucho ~0.0036 por muestra (0.0054 con volumen ×1.5).
+    // Sin suavizado, el LFO cuadrado sobre Volume daría saltos de 0.25 en una muestra.
+    VoiceManager manager;
+    prepareManager (manager, 48000.0);
+    manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
+    ModulationSettings settings;
+    settings.lfos[0] = { LfoShape::square, LfoMode::retrigger, false, 6.0f, 5 };
+    settings.lfos[1] = { LfoShape::sampleAndHold, LfoMode::free, false, 20.0f, 5 };
+    settings.slots[0] = { ModSource::lfo1, ModDestination::volume, -0.5f };
+    settings.slots[2] = { ModSource::lfo2, ModDestination::oscAPitch, 0.5f }; // saltos de hasta ±12 semitonos
+    manager.setModulationSettings (settings);
+    manager.noteOn (45, 1.0f); // A3 de FL, 110 Hz
+
+    std::vector<float> signal (48000 * 2, 0.0f);
+    for (int block = 0; block < 40; ++block)
+    {
+        // Cada 50 ms una ruta aparece y desaparece con el amount al 80 %.
+        settings.slots[1] = block % 2 == 0 ? undertow::synth::ModSlot { ModSource::lfo1, ModDestination::volume, 0.8f }
+                                           : undertow::synth::ModSlot {};
+        manager.setModulationSettings (settings);
+        manager.render (signal.data() + block * 2400, 2400);
+    }
+
+    std::printf ("  salto máximo entre muestras: %.5f\n", static_cast<double> (maxSampleJump (signal)));
+    CHECK (maxSampleJump (signal) < 0.02f);
+}
+
+void testMipBlendIsContinuous()
+{
+    std::printf ("Cruzar un límite de mipmap (vibrato, pitch bend) no cambia el sonido de golpe\n");
+
+    // A 48 kHz el límite es 28 kHz: a 875 Hz caben justo 32 armónicos (frontera entre los niveles de 32 y 16).
+    const auto& basic = factoryBank().get (0);
+    const double boundary = 28000.0 / 32.0;
+    const auto below = renderOscillator (basic, 2.0f / 3.0f, 48000.0, boundary * (1.0 - 1.0e-7), 2048);
+    const auto above = renderOscillator (basic, 2.0f / 3.0f, 48000.0, boundary * (1.0 + 1.0e-7), 2048);
+    float difference = 0.0f;
+    for (size_t i = 0; i < below.size(); ++i)
+        difference = std::max (difference, std::abs (below[i] - above[i]));
+
+    // Justo por debajo del límite todavía se lee el nivel de 32 armónicos, pero mezclado al 100 % con el de 16.
+    WavetableOscillator osc;
+    osc.setSampleRate (48000.0);
+    osc.setFrequency (boundary * (1.0 - 1.0e-7));
+    std::printf ("  a cada lado del límite: diferencia máxima %.6f (mezcla %.3f)\n", static_cast<double> (difference),
+                 static_cast<double> (osc.getMipBlend()));
+    CHECK (difference < 1.0e-3f);
+    CHECK (osc.getMipBlend() > 0.999f);
+
+    // Fuera de la franja de 1/6 de octava no hay mezcla: el brillo es el de la Fase 3.
+    osc.setFrequency (boundary * std::exp2 (-0.2));
+    CHECK (osc.getMipBlend() == 0.0f);
+}
+
+void testModulationCpuCost()
+{
+    std::printf ("Coste de CPU: 16 voces, filtro 24 dB y 8 rutas de modulación activas\n");
+
+    VoiceManager manager;
+    manager.prepare (48000.0);
+    manager.setWavetable (&factoryBank().get (4)); // Vowels, 64 frames
+    manager.setPolyphony (16);
+    manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
+    manager.setFilterSettings ({ true, { FilterType::lowPass, FilterSlope::db24, 800.0f, 1.0f, 0.3f }, 0.5f });
+
+    ModulationSettings settings;
+    settings.lfos[0] = { LfoShape::sine, LfoMode::retrigger, false, 6.0f, 5 };
+    settings.lfos[1] = { LfoShape::sampleAndHold, LfoMode::free, false, 40.0f, 5 };
+    settings.slots = { {
+        { ModSource::lfo1, ModDestination::filterCutoff, 0.3f },
+        { ModSource::lfo2, ModDestination::oscAPitch, 0.02f },
+        { ModSource::env2, ModDestination::filterCutoff, 0.5f },
+        { ModSource::env3, ModDestination::oscAPosition, 1.0f },
+        { ModSource::lfo2, ModDestination::filterResonance, 1.0f },
+        { ModSource::velocity, ModDestination::volume, -0.3f },
+        { ModSource::modWheel, ModDestination::filterDrive, 1.0f },
+        { ModSource::key, ModDestination::filterCutoff, 0.5f },
+    } };
+    settings.envelope3 = { 2.0f, 1.0f, 0.5f, 0.2f };
+    manager.setModulationSettings (settings);
+    manager.setModWheel (0.7f);
+    for (int note = 40; note < 56; ++note)
+        manager.noteOn (note, 0.8f);
+
+    const int blockSize = 256;
+    const int numBlocks = 48000 * 5 / blockSize;
+    std::vector<float> block (blockSize);
+    float peak = 0.0f;
+    bool finite = true;
+
+    const auto start = std::chrono::steady_clock::now();
+    for (int b = 0; b < numBlocks; ++b)
+    {
+        std::fill (block.begin(), block.end(), 0.0f);
+        manager.render (block.data(), blockSize);
+        for (const float s : block)
+        {
+            finite = finite && std::isfinite (s);
+            peak = std::max (peak, std::abs (s));
+        }
+    }
+    const double seconds = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
+    std::printf ("  %.1f %% de un núcleo (pico de salida %.2f)\n", 100.0 * seconds / 5.0, static_cast<double> (peak));
+    CHECK (finite);
+    CHECK (peak < 20.0f);
+}
 } // namespace
 
 
@@ -1100,6 +1524,21 @@ int main()
     testKeyTracking();
     testFilterToggleInVoiceIsClickFree();
     testFilterCpuCost();
+
+    testLfoShapes();
+    testLfoRateIsExact();
+    testLfoOneShot();
+    testSampleAndHold();
+    testTempoSyncRates();
+    testFreeModeFollowsSongPosition();
+    testFreeVersusRetrigger();
+    testKeyToCutoffEqualsKeyTracking();
+    testPitchModulation();
+    testVibratoRange();
+    testEnvelopeSweepsCutoff();
+    testModulationIsClickFree();
+    testMipBlendIsContinuous();
+    testModulationCpuCost();
 
     if (failures == 0)
         std::printf ("\nTodos los tests pasaron.\n");

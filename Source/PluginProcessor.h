@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -7,7 +8,8 @@
 #include "synth/VoiceManager.h"
 #include "synth/WavetableBank.h"
 
-// Fase 4: sintetizador polifónico: oscilador wavetable → filtro ZDF → envolvente ADSR de amplitud.
+// Fase 5: sintetizador polifónico: oscilador wavetable → filtro ZDF → envolvente ADSR de amplitud,
+// con 2 envolventes y 2 LFOs de modulación conectados mediante una matriz de 8 rutas.
 class UndertowAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -52,12 +54,20 @@ public:
 
     // Traduce los parámetros del filtro a la estructura del DSP. Se usa en el audio y en la GUI.
     undertow::synth::FilterSettings readFilterSettings() const noexcept;
+    undertow::synth::ModulationSettings readModulationSettings() const noexcept;
+
+    // Fase del LFO (0..1) para el punto que se mueve sobre su dibujo en la GUI.
+    float getLfoDisplayPhase (int lfo) const noexcept
+    {
+        return lfoDisplayPhases[static_cast<size_t> (lfo)].load (std::memory_order_relaxed);
+    }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     void updateVoiceParameters() noexcept;
     void handleMidiMessage (const juce::MidiMessage& message) noexcept;
+    void updateTransport() noexcept;
 
     juce::AudioProcessorValueTreeState parameters;
 
@@ -79,6 +89,31 @@ private:
     std::atomic<float>* filterDriveParam = nullptr;
     std::atomic<float>* filterKeyTrackParam = nullptr;
 
+    struct EnvelopeParams
+    {
+        std::atomic<float>* attack = nullptr;
+        std::atomic<float>* decay = nullptr;
+        std::atomic<float>* sustain = nullptr;
+        std::atomic<float>* release = nullptr;
+    };
+    struct LfoParams
+    {
+        std::atomic<float>* shape = nullptr;
+        std::atomic<float>* mode = nullptr;
+        std::atomic<float>* sync = nullptr;
+        std::atomic<float>* rate = nullptr;
+        std::atomic<float>* division = nullptr;
+    };
+    struct ModSlotParams
+    {
+        std::atomic<float>* source = nullptr;
+        std::atomic<float>* destination = nullptr;
+        std::atomic<float>* amount = nullptr;
+    };
+    std::array<EnvelopeParams, 2> modEnvelopeParams {};
+    std::array<LfoParams, undertow::synth::numLfos> lfoParams {};
+    std::array<ModSlotParams, undertow::synth::numModSlots> modSlotParams {};
+
     // Un solo banco para todas las instancias del plugin: se crea con la primera y se libera con la última.
     juce::SharedResourcePointer<undertow::synth::WavetableBank> wavetableBank;
 
@@ -86,6 +121,7 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> masterGain;
     std::atomic<int> activeVoiceCount { 0 };
     std::atomic<double> currentSampleRate { 48000.0 };
+    std::array<std::atomic<float>, undertow::synth::numLfos> lfoDisplayPhases {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UndertowAudioProcessor)
 };

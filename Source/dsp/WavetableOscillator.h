@@ -19,6 +19,9 @@ namespace undertow::dsp
 class WavetableOscillator
 {
 public:
+    // Anchura de la zona de fundido entre mipmaps: 1/6 de octava (2 semitonos) antes de cada límite.
+    static constexpr double mipBlendOctaves = 1.0 / 6.0;
+
     void setSampleRate (double newSampleRate) noexcept
     {
         sampleRate = newSampleRate;
@@ -39,9 +42,24 @@ public:
 
     void setFrequency (double newFrequencyHz) noexcept
     {
-        frequencyHz = newFrequencyHz;
+        baseFrequencyHz = newFrequencyHz;
         updateIncrement();
     }
+
+    // Modulación de tono en semitonos (vibrato, caídas de pitch). La voz la llama en cada muestra:
+    // si el valor no cambió no se recalcula nada.
+    void setPitchModulation (float semitones) noexcept
+    {
+        if (semitones == pitchModulation)
+            return;
+        pitchModulation = semitones;
+        updateIncrement();
+    }
+
+    // Modulación de Position (fracción del recorrido, -1..1). Se suma DESPUÉS del suavizado de la perilla:
+    // la perilla se mueve con inercia (sin zipper) y la modulación llega al instante (un LFO rápido o un
+    // attack corto no se "emborronan").
+    void setPositionModulation (float amount) noexcept { positionModulation = amount; }
 
     // Cambiar de tabla con la nota sonando haría un salto en la forma de onda (clic):
     // durante unos milisegundos se leen las dos y se hace un fundido cruzado.
@@ -77,13 +95,14 @@ public:
 
         // Position se suaviza por muestra: girar la perilla recorre los frames intermedios en vez de saltar.
         position += (targetPosition - position) * positionSmoothingCoef;
+        const float framePosition = std::clamp (position + positionModulation, 0.0f, 1.0f);
 
-        float output = read (*table);
+        float output = readBlended (*table, framePosition);
 
         if (crossfadeRemaining > 0)
         {
             const float oldWeight = static_cast<float> (crossfadeRemaining) / static_cast<float> (crossfadeLength);
-            output += (read (*previousTable) - output) * oldWeight;
+            output += (readBlended (*previousTable, framePosition) - output) * oldWeight;
             if (--crossfadeRemaining == 0)
                 previousTable = nullptr;
         }
@@ -96,26 +115,37 @@ public:
     }
 
     [[nodiscard]] int getMipLevel() const noexcept { return mipLevel; }
+    [[nodiscard]] float getMipBlend() const noexcept { return mipBlend; }
+    [[nodiscard]] double getFrequency() const noexcept { return frequencyHz; }
 
 private:
-    [[nodiscard]] float read (const Wavetable& wavetable) const noexcept
+    // Cerca del límite entre dos mipmaps se mezclan los dos niveles (ver updateIncrement).
+    [[nodiscard]] float readBlended (const Wavetable& wavetable, float framePosition) const noexcept
+    {
+        const float rich = read (wavetable, mipLevel, framePosition);
+        if (mipBlend <= 0.0f)
+            return rich;
+        return rich + (read (wavetable, mipLevel + 1, framePosition) - rich) * mipBlend;
+    }
+
+    [[nodiscard]] float read (const Wavetable& wavetable, int level, float normalisedPosition) const noexcept
     {
         const int numFrames = wavetable.getNumFrames();
 
-        const double readPosition = phase * Wavetable::levelSize (mipLevel);
+        const double readPosition = phase * Wavetable::levelSize (level);
         const int index = static_cast<int> (readPosition);
         const auto fraction = static_cast<float> (readPosition - index);
 
-        const float* frameA = wavetable.getFrame (mipLevel, 0);
+        const float* frameA = wavetable.getFrame (level, 0);
         if (numFrames == 1)
             return interpolate (frameA + index, fraction);
 
-        const float framePosition = position * static_cast<float> (numFrames - 1);
+        const float framePosition = normalisedPosition * static_cast<float> (numFrames - 1);
         const int firstFrame = std::min (static_cast<int> (framePosition), numFrames - 2);
         const float frameFraction = framePosition - static_cast<float> (firstFrame);
 
-        frameA = wavetable.getFrame (mipLevel, firstFrame);
-        const float* frameB = wavetable.getFrame (mipLevel, firstFrame + 1);
+        frameA = wavetable.getFrame (level, firstFrame);
+        const float* frameB = wavetable.getFrame (level, firstFrame + 1);
 
         const float a = interpolate (frameA + index, fraction);
         const float b = interpolate (frameB + index, fraction);
@@ -135,15 +165,30 @@ private:
 
     void updateIncrement() noexcept
     {
+        frequencyHz = pitchModulation == 0.0f ? baseFrequencyHz
+                                              : baseFrequencyHz * std::exp2 (static_cast<double> (pitchModulation) / 12.0);
         phaseIncrement = sampleRate > 0.0 ? frequencyHz / sampleRate : 0.0;
 
         // Nivel de mipmap: el primero (el más rico) cuyo armónico más alto no supera el límite.
         // Ejemplo a 48 kHz (límite 28 kHz): A5 = 440 Hz admite 63 armónicos -> nivel 5 (32 armónicos).
-        // Solo se recalcula al cambiar la nota, no en cada muestra.
+        // Solo se recalcula cuando cambia el tono (nota o pitch modulado), no en cada muestra.
         const double allowedHarmonics = maxHarmonicFrequency / std::max (frequencyHz, 1.0e-3);
         mipLevel = 0;
         while (mipLevel < Wavetable::numLevels - 1 && Wavetable::maxHarmonicsAtLevel (mipLevel) > allowedHarmonics)
             ++mipLevel;
+
+        // Fundido entre mipmaps. Al subir el tono y cruzar un límite, el nivel siguiente tiene la mitad de
+        // armónicos: con un cambio seco, la octava más aguda del sonido desaparecería de golpe (un salto de
+        // brillo audible con vibrato o pitch bend). Por eso, en la franja de mipBlendOctaves antes del límite
+        // se mezcla con el nivel siguiente de 0 % a 100 %: al llegar al límite ya suena solo el nivel siguiente
+        // y el cambio es continuo. Se mezcla hacia el nivel MÁS POBRE (nunca hacia uno que se reflejaría),
+        // así que no añade aliasing: el precio es un poco menos de brillo dentro de esa franja.
+        mipBlend = 0.0f;
+        if (mipLevel < Wavetable::numLevels - 1)
+        {
+            const double headroomOctaves = std::log2 (allowedHarmonics / Wavetable::maxHarmonicsAtLevel (mipLevel));
+            mipBlend = static_cast<float> (std::clamp (1.0 - headroomOctaves / mipBlendOctaves, 0.0, 1.0));
+        }
     }
 
     static constexpr double audibleLimitHz = 20000.0;
@@ -156,14 +201,18 @@ private:
     int crossfadeLength = 1;
 
     double sampleRate = 44100.0;
-    double frequencyHz = 440.0;
+    double baseFrequencyHz = 440.0; // la de la nota
+    double frequencyHz = 440.0;     // la que suena: nota + modulación de pitch
     double maxHarmonicFrequency = 22050.0;
     double phase = 0.0; // double: con float la fase acumula error audible en notas graves
     double phaseIncrement = 0.0;
+    float pitchModulation = 0.0f; // semitonos
     int mipLevel = 0;
+    float mipBlend = 0.0f;
 
     float targetPosition = 0.0f;
     float position = 0.0f;
+    float positionModulation = 0.0f;
     float positionSmoothingCoef = 1.0f;
 };
 

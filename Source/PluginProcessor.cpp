@@ -24,8 +24,8 @@ float textToTime (const juce::String& text)
     return isSeconds ? value : value / 1000.0f;
 }
 
-std::unique_ptr<juce::AudioParameterFloat> makeTimeParameter (const char* id, const char* name,
-                                                              float minSeconds, float defaultSeconds)
+std::unique_ptr<juce::AudioParameterFloat> makeTimeParameter (const char* id, const juce::String& name, float minSeconds,
+                                                              float defaultSeconds, int version = undertow::params::versionHint)
 {
     // Rango con "skew": la mitad del recorrido de la perilla cubre de minSeconds a 0.5 s,
     // donde se hacen casi todos los ajustes finos. Un rango lineal de 0 a 10 s haría
@@ -34,7 +34,7 @@ std::unique_ptr<juce::AudioParameterFloat> makeTimeParameter (const char* id, co
     range.setSkewForCentre (0.5f);
 
     return std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { id, undertow::params::versionHint }, name, range, defaultSeconds,
+        juce::ParameterID { id, version }, name, range, defaultSeconds,
         juce::AudioParameterFloatAttributes()
             .withStringFromValueFunction (timeToText)
             .withValueFromStringFunction (textToTime));
@@ -62,6 +62,31 @@ juce::AudioParameterFloatAttributes percentAttributes()
         .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; })
         .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue() / 100.0f; });
 }
+
+// Rango logarítmico exacto: cada octava ocupa el mismo recorrido de la perilla.
+juce::NormalisableRange<float> logRange (float minValue, float maxValue)
+{
+    const float ratio = maxValue / minValue;
+    return { minValue, maxValue,
+             [=] (float, float, float normalised) { return minValue * std::pow (ratio, normalised); },
+             [=] (float, float, float value) { return std::log (value / minValue) / std::log (ratio); },
+             [] (float start, float end, float value) { return juce::jlimit (start, end, value); } };
+}
+
+template <size_t N>
+juce::StringArray toStringArray (const std::array<const char*, N>& names)
+{
+    juce::StringArray result;
+    for (const char* name : names)
+        result.add (name);
+    return result;
+}
+
+template <typename Enum>
+Enum choiceToEnum (const std::atomic<float>* parameter) noexcept
+{
+    return static_cast<Enum> (static_cast<int> (parameter->load()));
+}
 } // namespace
 
 UndertowAudioProcessor::UndertowAudioProcessor()
@@ -85,6 +110,26 @@ UndertowAudioProcessor::UndertowAudioProcessor()
     filterResonanceParam = parameters.getRawParameterValue (id::filter1Resonance);
     filterDriveParam = parameters.getRawParameterValue (id::filter1Drive);
     filterKeyTrackParam = parameters.getRawParameterValue (id::filter1KeyTrack);
+
+    for (size_t e = 0; e < modEnvelopeParams.size(); ++e)
+    {
+        const auto& ids = id::modEnvelopes[e];
+        modEnvelopeParams[e] = { parameters.getRawParameterValue (ids.attack), parameters.getRawParameterValue (ids.decay),
+                                 parameters.getRawParameterValue (ids.sustain), parameters.getRawParameterValue (ids.release) };
+    }
+    for (size_t l = 0; l < lfoParams.size(); ++l)
+    {
+        const auto& ids = id::lfos[l];
+        lfoParams[l] = { parameters.getRawParameterValue (ids.shape), parameters.getRawParameterValue (ids.mode),
+                         parameters.getRawParameterValue (ids.sync), parameters.getRawParameterValue (ids.rate),
+                         parameters.getRawParameterValue (ids.division) };
+    }
+    for (size_t s = 0; s < modSlotParams.size(); ++s)
+    {
+        const auto& ids = id::modSlots[s];
+        modSlotParams[s] = { parameters.getRawParameterValue (ids.source), parameters.getRawParameterValue (ids.destination),
+                             parameters.getRawParameterValue (ids.amount) };
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout UndertowAudioProcessor::createParameterLayout()
@@ -161,6 +206,66 @@ juce::AudioProcessorValueTreeState::ParameterLayout UndertowAudioProcessor::crea
                                                              "Filter Key Track", juce::NormalisableRange<float> (0.0f, 1.0f),
                                                              0.0f, percentAttributes()));
 
+    // --- Fase 5: modulación. Todas las rutas vacías por defecto: un proyecto de la Fase 4 suena igual. ---
+    namespace synth = undertow::synth;
+    constexpr int v5 = id::versionHintModulation;
+
+    // Envolventes 2 y 3. Por defecto sustain 0 %: una "caída" que se oye en cuanto se conectan a algo.
+    const synth::ModulationSettings defaults;
+    for (size_t e = 0; e < id::modEnvelopes.size(); ++e)
+    {
+        const auto& ids = id::modEnvelopes[e];
+        const auto& d = e == 0 ? defaults.envelope2 : defaults.envelope3;
+        const juce::String name = "Env " + juce::String (static_cast<int> (e) + 2) + " ";
+        layout.add (makeTimeParameter (ids.attack, name + "Attack", 0.001f, d.attackSeconds, v5));
+        layout.add (makeTimeParameter (ids.decay, name + "Decay", 0.001f, d.decaySeconds, v5));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ids.sustain, v5 }, name + "Sustain",
+                                                                 juce::NormalisableRange<float> (0.0f, 1.0f), d.sustainLevel,
+                                                                 percentAttributes()));
+        layout.add (makeTimeParameter (ids.release, name + "Release", 0.005f, d.releaseSeconds, v5));
+    }
+
+    // LFOs. La velocidad libre va de 0.02 Hz (un ciclo cada 50 s) a 40 Hz, en escala logarítmica.
+    juce::StringArray divisionNames;
+    for (const auto& division : synth::lfoDivisions)
+        divisionNames.add (division.name);
+
+    const synth::LfoSettings lfoDefaults;
+    for (size_t l = 0; l < id::lfos.size(); ++l)
+    {
+        const auto& ids = id::lfos[l];
+        const juce::String name = "LFO " + juce::String (static_cast<int> (l) + 1) + " ";
+        layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids.shape, v5 }, name + "Shape",
+                                                                  toStringArray (synth::lfoShapeNames), 0));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids.mode, v5 }, name + "Mode",
+                                                                  toStringArray (synth::lfoModeNames),
+                                                                  static_cast<int> (lfoDefaults.mode)));
+        layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { ids.sync, v5 }, name + "Sync",
+                                                                lfoDefaults.tempoSync));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ids.rate, v5 }, name + "Rate", logRange (0.02f, 40.0f), lfoDefaults.rateHz,
+            juce::AudioParameterFloatAttributes()
+                .withLabel ("Hz")
+                .withStringFromValueFunction ([] (float hz, int) { return juce::String (hz, hz < 1.0f ? 3 : 2) + " Hz"; })));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids.division, v5 }, name + "Division",
+                                                                  divisionNames, lfoDefaults.division));
+    }
+
+    // Matriz de modulación: 8 rutas fuente → destino con amount bipolar (-100 %..+100 %).
+    for (size_t s = 0; s < id::modSlots.size(); ++s)
+    {
+        const auto& ids = id::modSlots[s];
+        const juce::String name = "Mod " + juce::String (static_cast<int> (s) + 1) + " ";
+        layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids.source, v5 }, name + "Source",
+                                                                  toStringArray (synth::modSourceNames), 0));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids.destination, v5 },
+                                                                  name + "Destination",
+                                                                  toStringArray (synth::modDestinationNames), 0));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ids.amount, v5 }, name + "Amount",
+                                                                 juce::NormalisableRange<float> (-1.0f, 1.0f), 0.0f,
+                                                                 percentAttributes()));
+    }
+
     return layout;
 }
 
@@ -197,6 +302,61 @@ void UndertowAudioProcessor::updateVoiceParameters() noexcept
 
     // Cada voz suaviza el filtro por muestra, así que aquí basta con pasar los valores una vez por bloque.
     voiceManager.setFilterSettings (readFilterSettings());
+    voiceManager.setModulationSettings (readModulationSettings());
+}
+
+undertow::synth::ModulationSettings UndertowAudioProcessor::readModulationSettings() const noexcept
+{
+    namespace synth = undertow::synth;
+    synth::ModulationSettings settings;
+
+    const auto readEnvelope = [] (const EnvelopeParams& p) {
+        return undertow::dsp::AdsrParameters { p.attack->load(), p.decay->load(), p.sustain->load(), p.release->load() };
+    };
+    settings.envelope2 = readEnvelope (modEnvelopeParams[0]);
+    settings.envelope3 = readEnvelope (modEnvelopeParams[1]);
+
+    for (size_t l = 0; l < lfoParams.size(); ++l)
+    {
+        auto& lfo = settings.lfos[l];
+        lfo.shape = choiceToEnum<undertow::dsp::LfoShape> (lfoParams[l].shape);
+        lfo.mode = choiceToEnum<synth::LfoMode> (lfoParams[l].mode);
+        lfo.tempoSync = lfoParams[l].sync->load() >= 0.5f;
+        lfo.rateHz = lfoParams[l].rate->load();
+        lfo.division = static_cast<int> (lfoParams[l].division->load());
+    }
+
+    for (size_t s = 0; s < modSlotParams.size(); ++s)
+    {
+        auto& slot = settings.slots[s];
+        slot.source = choiceToEnum<synth::ModSource> (modSlotParams[s].source);
+        slot.destination = choiceToEnum<synth::ModDestination> (modSlotParams[s].destination);
+        slot.amount = modSlotParams[s].amount->load();
+    }
+
+    return settings;
+}
+
+void UndertowAudioProcessor::updateTransport() noexcept
+{
+    // El host informa el tempo y la posición de la canción. getPosition() está pensado para llamarse
+    // desde processBlock: no reserva memoria ni bloquea.
+    undertow::synth::Transport transport;
+    if (auto* host = getPlayHead())
+    {
+        if (const auto position = host->getPosition())
+        {
+            if (const auto bpm = position->getBpm())
+                transport.bpm = *bpm;
+            if (const auto ppq = position->getPpqPosition())
+            {
+                transport.ppqPosition = *ppq;
+                transport.hasPosition = true;
+            }
+            transport.isPlaying = position->getIsPlaying();
+        }
+    }
+    voiceManager.setTransport (transport);
 }
 
 undertow::synth::FilterSettings UndertowAudioProcessor::readFilterSettings() const noexcept
@@ -224,6 +384,7 @@ void UndertowAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         return;
 
     updateVoiceParameters();
+    updateTransport();
 
     // Todas las voces se suman en el canal 0 (en esta fase el sinte es mono) y luego se copia al resto.
     float* mono = buffer.getWritePointer (0);
@@ -252,6 +413,9 @@ void UndertowAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         buffer.copyFrom (channel, 0, buffer, 0, 0, numSamples);
 
     activeVoiceCount.store (voiceManager.getNumActiveVoices(), std::memory_order_relaxed);
+    for (size_t l = 0; l < lfoDisplayPhases.size(); ++l)
+        lfoDisplayPhases[l].store (static_cast<float> (voiceManager.getLfoDisplayPhase (static_cast<int> (l))),
+                                   std::memory_order_relaxed);
 }
 
 void UndertowAudioProcessor::handleMidiMessage (const juce::MidiMessage& message) noexcept
@@ -268,6 +432,10 @@ void UndertowAudioProcessor::handleMidiMessage (const juce::MidiMessage& message
         voiceManager.killAll();
     else if (message.isAllNotesOff())
         voiceManager.releaseAll();
+    else if (message.isControllerOfType (1)) // CC 1: rueda de modulación
+        voiceManager.setModWheel (static_cast<float> (message.getControllerValue()) / 127.0f);
+    else if (message.isChannelPressure())
+        voiceManager.setAftertouch (static_cast<float> (message.getChannelPressureValue()) / 127.0f);
 }
 
 void UndertowAudioProcessor::getStateInformation (juce::MemoryBlock& destData)

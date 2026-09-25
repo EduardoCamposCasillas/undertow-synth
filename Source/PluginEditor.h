@@ -7,11 +7,14 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "gui/FilterResponseDisplay.h"
+#include "gui/LfoDisplay.h"
 #include "gui/WavetableDisplay.h"
+#include "synth/Modulation.h"
 
 class UndertowAudioProcessor;
 
-// GUI funcional: oscilador, filtro, envolvente y voz. La GUI profesional llega en la Fase 9.
+// GUI funcional: oscilador, filtro, envolventes, LFOs, matriz de modulación y voz.
+// La GUI profesional (escalable, arrastrar para modular) llega en la Fase 9.
 class UndertowAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -23,24 +26,41 @@ public:
 
 private:
     void timerCallback() override;
+    void showPage (bool modulation);
+
+    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
     struct Knob
     {
         juce::Slider slider { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::TextBoxBelow };
         juce::Label label;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+        std::unique_ptr<SliderAttachment> attachment;
     };
+
+    // Crea la perilla, su etiqueta y su attachment con el parámetro.
+    void setUpKnob (Knob& knob, juce::Component& page, const char* parameterId, const juce::String& name, int width);
+    // Rellena las opciones desde el propio parámetro (así la GUI nunca se desincroniza de la lista guardada).
+    void setUpComboBox (juce::ComboBox& box, juce::Component& page, const char* parameterId,
+                        std::unique_ptr<ComboBoxAttachment>& attachment);
+    static void layoutKnob (Knob& knob, juce::Rectangle<int> column);
 
     static constexpr size_t numEnvelopeKnobs = 4;
     static constexpr size_t numVoiceKnobs = 3;
 
     UndertowAudioProcessor& processor;
+
+    // Dos páginas del mismo tamaño que la ventana de la Fase 4 (cabe en pantallas pequeñas con escalado).
+    juce::Component soundPage, modulationPage;
+    juce::TextButton soundTab { "Sonido" };
+    juce::TextButton modulationTab;
     std::array<Knob, numEnvelopeKnobs + numVoiceKnobs> knobs;
 
     juce::GroupComponent oscillatorGroup { {}, "Oscilador A" };
     juce::Label wavetableLabel;
     juce::ComboBox wavetableBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> wavetableAttachment;
+    std::unique_ptr<ComboBoxAttachment> wavetableAttachment;
     Knob positionKnob;
     undertow::gui::WavetableDisplay wavetableDisplay;
     std::atomic<float>* wavetableParam = nullptr;
@@ -50,18 +70,53 @@ private:
 
     juce::GroupComponent filterGroup { {}, "Filtro" };
     juce::ToggleButton filterOnButton { "On" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> filterOnAttachment;
+    std::unique_ptr<ButtonAttachment> filterOnAttachment;
     juce::ComboBox filterTypeBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> filterTypeAttachment;
+    std::unique_ptr<ComboBoxAttachment> filterTypeAttachment;
     juce::ComboBox filterSlopeBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> filterSlopeAttachment;
+    std::unique_ptr<ComboBoxAttachment> filterSlopeAttachment;
     std::array<Knob, numFilterKnobs> filterKnobs;
     undertow::gui::FilterResponseDisplay filterDisplay;
 
-    juce::GroupComponent envelopeGroup { {}, "Envolvente de amplitud" };
+    juce::GroupComponent envelopeGroup { {}, "Env 1 (amplitud)" };
     juce::GroupComponent voiceGroup { {}, "Voz" };
     juce::Label activeVoicesLabel;
     int lastShownVoiceCount = -1;
+
+    // --- Fase 5: modulación ---
+    struct ModEnvelopeControls
+    {
+        juce::GroupComponent group;
+        std::array<Knob, 4> knobs;
+    };
+    std::array<ModEnvelopeControls, 2> modEnvelopes;
+
+    struct LfoControls
+    {
+        juce::GroupComponent group;
+        juce::ComboBox shapeBox, modeBox, divisionBox;
+        std::unique_ptr<ComboBoxAttachment> shapeAttachment, modeAttachment, divisionAttachment;
+        juce::ToggleButton syncButton { "Sync (tempo)" };
+        std::unique_ptr<ButtonAttachment> syncAttachment;
+        Knob rateKnob;
+        juce::Label divisionLabel;
+        undertow::gui::LfoDisplay display;
+        std::atomic<float>* shapeParam = nullptr;
+        std::atomic<float>* syncParam = nullptr;
+    };
+    std::array<LfoControls, undertow::synth::numLfos> lfos;
+
+    struct ModSlotControls
+    {
+        juce::Label number;
+        juce::ComboBox sourceBox, destinationBox;
+        std::unique_ptr<ComboBoxAttachment> sourceAttachment, destinationAttachment;
+        juce::Label arrow;
+        juce::Slider amount { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+        std::unique_ptr<SliderAttachment> amountAttachment;
+    };
+    juce::GroupComponent matrixGroup { {}, "Matriz de modulación" };
+    std::array<ModSlotControls, undertow::synth::numModSlots> modSlots;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UndertowAudioProcessorEditor)
 };

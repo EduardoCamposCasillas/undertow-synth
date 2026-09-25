@@ -93,7 +93,7 @@ Source/
 - [x] Fase 2 — Polifonía y envolvente ADSR (sin clics, voice stealing correcto).
 - [x] Fase 3 — Oscilador wavetable sin aliasing (mipmaps por octava, interpolación, morphing de posición).
 - [x] Fase 4 — Filtros ZDF/TPT: LP/HP/BP 12 y 24 dB, resonancia, drive, key tracking.
-- [ ] Fase 5 — Modulación: 2 envolventes extra, LFOs sincronizados al tempo, matriz de modulación.
+- [x] Fase 5 — Modulación: 2 envolventes extra, LFOs sincronizados al tempo, matriz de modulación.
 - [ ] Fase 6 — Segundo oscilador, sub, ruido, unison (hasta 16 voces) con detune y ancho estéreo.
 - [ ] Fase 7 — FM y warp de osciladores: FM/PM entre osciladores (OSC B → OSC A, ruido → OSC, sub → OSC),
       ring mod, y modos de warp (bend, sync, PWM, mirror, quantize/bitcrush). Todo modulable desde la matriz
@@ -140,7 +140,7 @@ Fase 3 COMPLETADA (2026-09-24). Probada por el usuario en FL Studio.
   ingenua: −12 dB. Armónicos altos conservan su nivel (0.00 dB). Morph y cambio de tabla sin clics.
 - Release con 0 warnings (build limpio); pluginval strictness 10: SUCCESS.
 - Límite conocido: el paso de mipmap es por octava; con pitch bend/glide (Fase 5) podría oírse un leve salto de
-  brillo al cruzar un límite. Solución prevista: mezclar dos niveles vecinos.
+  brillo al cruzar un límite. RESUELTO en Fase 5 (fundido entre niveles vecinos).
 
 Fase 4 COMPLETADA (2026-09-24). Probada por el usuario en FL Studio: suena bien.
 - `dsp/Filter.h`: `SvfStage` (SVF TPT/ZDF de 2 polos: LP/BP/HP a la vez) y `Filter` (drive → etapa 1 → etapa 2).
@@ -164,4 +164,39 @@ Fase 4 COMPLETADA (2026-09-24). Probada por el usuario en FL Studio: suena bien.
 - Límite conocido: el drive no tiene oversampling. Alias medido (sierra, 48 kHz, drive 100 %): −55 dB a 110 Hz,
   −43 dB a 440 Hz, −27 dB a 1760 Hz. Solución prevista: oversampling en Fase 7/8.
 
-Siguiente: Fase 5 (modulación), pendiente de que el usuario la inicie.
+Fase 5 COMPLETADA (2026-09-25). Probada por el usuario en FL Studio: suena bien.
+- `dsp/Lfo.h`: LFO bipolar (Sine, Triangle, Saw Up/Down, Square, Sample & Hold), fase en double + contador de ciclos.
+  S&H = hash de (semilla, ciclo): sin estado, repetible y el mismo en todas las voces en modo Free. One Shot = 1 ciclo.
+- `synth/Modulation.h`: enums y nombres de fuentes (None, Env 1 (Amp), Env 2, Env 3, LFO 1, LFO 2, Velocity, Key,
+  Mod Wheel, Aftertouch) y destinos (None, Osc A Position, Osc A Pitch, Filter Cutoff, Filter Resonance, Filter
+  Drive, Volume); 17 divisiones de tempo (4/4). TODOS los órdenes se guardan: solo añadir al final.
+  Escalas del amount (100 %): Position/Resonance/Drive = toda la perilla; Pitch ±24 st; Cutoff 10 octavas;
+  Volume ×(1 + m) limitado a 0..2. Key = (nota − 60) / 60 → Key→Cutoff 50 % = key tracking 100 % exacto.
+- Voz: fuentes y matriz por muestra. Env 2/3 por voz (reset al empezar desde silencio). LFO por voz: Retrigger/One
+  Shot reinician en cada nota; Free se re-alinea con el reloj común del VoiceManager al inicio de cada render
+  (con Sync + host reproduciendo, la fase sale de ppqPosition). Suavizado: LFO 1 ms, velocity/mod wheel/aftertouch
+  10 ms, amount 5 ms; envolventes SIN suavizar (Env→Cutoff llega en 1 ms). Cambiar la fuente/destino de una ruta:
+  la vieja se apaga en 5 ms y la nueva entra desde 0 (`activeRoutes`). Primera muestra de una nota: valores
+  directos (snap). Sin rutas activas la matriz no se calcula.
+- La modulación se suma DESPUÉS del suavizado de las perillas: `Filter::setModulation` (cutoff en octavas,
+  resonancia/drive; coeficientes recalculados por grupos solo si cambian) y
+  `WavetableOscillator::setPitchModulation/setPositionModulation`. Refactor del filtro: se suavizan resonancia/drive/
+  pendiente en espacio de parámetro y los k se derivan (mismo resultado medido que en Fase 4).
+- Resuelto el límite de la Fase 3: fundido entre mipmaps en los últimos 1/6 de octava antes de cada límite
+  (mezcla hacia el nivel más pobre: sin alias nuevo).
+- Parámetros nuevos (versionHint 4; IDs en `Parameters.h`): env2/env3 Attack/Decay/Sustain/Release (def. 5 ms,
+  500 ms, 0 %, 150 ms); lfo1/lfo2 Shape, Mode (def. Retrigger), Sync (def. on), Rate (0.02–40 Hz log, def. 2 Hz),
+  Division (def. 1/4); mod1..mod8 Source, Destination, Amount (−100..100 %). Todo vacío por defecto = sonido Fase 4.
+  MIDI: CC 1 → Mod Wheel, channel pressure → Aftertouch. Tempo/posición de `getPlayHead()` (120 BPM sin host).
+- GUI: dos pestañas ("Sonido" = Fase 4; "Modulación" = LFO 1 | LFO 2 con visor y punto de fase, Env 2 | Env 3,
+  matriz 2×4). Tamaño igual al de la Fase 4 (870×602): la versión en una sola ventana de 1470 px no cabía en la
+  pantalla del usuario con escalado de Windows. Literales con tildes: usar `juce::String::fromUTF8` con escapes.
+- Tests (14 nuevos): formas y velocidad exacta del LFO, One Shot, S&H, tempo sync, fase desde ppq, Free vs
+  Retrigger, Key→Cutoff = key tracking, Mod Wheel→Pitch (+12 st y +1 st, error 0.0000 cents), vibrato ±100 cents,
+  Env 2→Cutoff (pico 6400 Hz en 1.0 ms), modulación con saltos sin clics, continuidad del fundido de mipmaps.
+  CPU: 16 voces + filtro 24 dB sin rutas ≈ 7–8 % de un núcleo; con 8 rutas activas ≈ 12–14 %.
+- Release con 0 warnings (build limpio); pluginval strictness 10: SUCCESS (compilado en `out/pv` porque FL tenía
+  el VST3 de `build/` abierto y bloqueado).
+- Pendiente de ideas para más adelante: fade-in/delay del LFO, modular el amount con otra fuente (aux), pitch bend.
+
+Siguiente: Fase 6 (segundo oscilador, sub, ruido, unison), pendiente de que el usuario la inicie.

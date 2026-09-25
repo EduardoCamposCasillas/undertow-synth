@@ -429,3 +429,185 @@ Inténtalo primero; las pistas vendrán después.
 
 ### Retos completados
 - [ ] Reto Fase 4 — pad "detrás de una pared" que se abre en el drop
+
+---
+
+## Fase 5 — Modulación: envolventes, LFOs y matriz
+
+### Conceptos aprendidos
+- **Modulación = algo que mueve una perilla por ti.** Hasta ahora, si querías que el cutoff subiera tenías que girarlo
+  o dibujar una automatización en FL. Una **fuente de modulación** es un "brazo robot" que lo gira solo, en cada nota,
+  de forma repetible. Casi todo lo que hace que un sinte suene "vivo" (un pluck, un wobble, un vibrato, un pad que
+  respira) es modulación.
+- **Ruta = fuente → destino × amount.** La **matriz de modulación** tiene 8 rutas. Cada una conecta una fuente
+  (Env 2, LFO 1, Velocity…) con un destino (Cutoff, Pitch…) con una cantidad (**amount**, de −100 % a +100 %).
+  El valor final es: **perilla + suma de (fuente × amount)** de todas las rutas que van a ese destino.
+  - Amount **positivo** empuja el destino hacia arriba; **negativo**, hacia abajo (la misma envolvente puede abrir o
+    cerrar el filtro).
+  - La perilla es el **punto de partida**: con Cutoff 300 Hz y Env 2 → Cutoff +40 %, el filtro sale de 300 Hz,
+    sube 4 octavas (a 4.8 kHz) y vuelve.
+- **Escala del amount (100 % = recorrido completo de la perilla):**
+  | Destino | Qué significa el amount |
+  |---|---|
+  | Osc A Position | 100 % = de 0 % a 100 % de la tabla. |
+  | Osc A Pitch | 100 % = **±24 semitonos**. 50 % = una octava; **4.17 % = 1 semitono**; ~1.25 % ≈ un vibrato suave. |
+  | Filter Cutoff | 100 % = **10 octavas**. Muy fácil de pensar: **cada 10 % = 1 octava**. |
+  | Filter Resonance / Drive | 100 % = toda la perilla. |
+  | Volume | −100 % = silencio, +100 % = el doble de volumen (+6 dB). |
+  Truco: los valores pequeños (como un vibrato de 1.25 %) se escriben mejor que se arrastran: doble clic en la
+  casilla del número y teclea `1.25`. **Doble clic en la barra** vuelve el amount a 0 %.
+- **Unipolar y bipolar.** Las envolventes y la velocity van de **0 a 1** (unipolares: solo empujan en una dirección).
+  Los LFO van de **−1 a +1** (bipolares: suben y bajan alrededor de la perilla). Por eso un LFO sobre el cutoff
+  "abre y cierra" alrededor del valor de la perilla, y una envolvente solo lo abre (o solo lo cierra con amount negativo).
+- **Envolventes de modulación (Env 2 y Env 3).** Son ADSR iguales a la de volumen, pero no mueven el volumen: mueven
+  lo que tú conectes. La Env 1 (la de amplitud) también se puede usar como fuente.
+- **LFO (Low Frequency Oscillator).** Un oscilador demasiado lento para oírse como nota (0.02 a 40 Hz) que se usa
+  para mover parámetros de forma cíclica.
+  - **Formas:** *Sine* (suave, orgánico), *Triangle* (lineal, parejo), *Saw Up/Down* (rampa que sube/baja y salta),
+    *Square* (dos estados: on/off), *Sample & Hold* (un valor al azar por ciclo: "computadora que piensa").
+  - **Rate / Sync.** Con *Sync* apagado se ajusta en Hz. Con *Sync* encendido se ajusta en figuras musicales
+    (1/4 = una negra, 1/8 T = tresillo de corchea, 1/4 D = negra con puntillo…) y sigue el tempo de FL.
+  - **Modos.** *Retrigger*: cada nota reinicia su LFO (todas las notas "respiran" igual desde que empiezan).
+    *Free*: un solo reloj para todas las notas; con Sync, además, **ligado al compás de la canción** (el wobble cae
+    siempre en el pulso, aunque empieces a reproducir a mitad de compás). *One Shot*: hace un solo ciclo y se para
+    (una "envolvente dibujada").
+- **Fuentes MIDI.** *Velocity* (qué tan fuerte tocas), *Key* (qué nota: 0 en C5, sube hacia los agudos),
+  *Mod Wheel* (la rueda de modulación, CC 1) y *Aftertouch* (presión sobre la tecla ya pulsada).
+  Dato curioso: **Key → Cutoff al 50 % es exactamente el Key Track al 100 %** de la Fase 4. El key tracking era
+  una modulación "precableada".
+- **Por qué nada hace clic.** Un LFO cuadrado o un Sample & Hold saltan de golpe; conectado a Volume, ese salto sería
+  un clic. Esas fuentes se suavizan 1 ms (inaudible como "lentitud", suficiente para no chasquear). Las envolventes
+  **no** se suavizan (ya son continuas): un attack de 1 ms llega en 1 ms. Y si cambias una ruta con el amount subido,
+  la ruta vieja se apaga en 5 ms antes de que entre la nueva.
+- **Límite resuelto de la Fase 3.** Con el pitch modulado (vibrato, caídas de tono) una nota puede cruzar el límite
+  entre dos mipmaps. Antes, al cruzarlo, la octava más aguda del sonido desaparecía de golpe. Ahora, en los últimos
+  2 semitonos antes de cada límite, se mezclan los dos niveles: el brillo cambia de forma continua.
+
+### Qué hace cada control al sonido
+| Control / ruta | Qué se oye | En el analizador / osciloscopio |
+|---|---|---|
+| **Env 2 → Cutoff** (amount +) | Cada nota empieza brillante y se oscurece: el "pluck", el "squelch" del acid, el ataque de un bajo. | Las líneas de los agudos aparecen al principio de cada nota y se apagan con el decay. |
+| **Decay de la Env 2** | Corto (50–150 ms): percusivo, "plick". Largo (1–2 s): "wooow" que se cierra despacio. | La velocidad con la que se apagan los agudos. |
+| **Sustain de la Env 2** | 0 %: el filtro se cierra del todo. 50 %: se queda a medio abrir mientras mantienes la nota. | Cuántos agudos quedan con la nota sostenida. |
+| **Env 2 → Pitch** (amount +) | La nota empieza más aguda y "cae" a su tono: zap, láser, bombo sintético. | En el osciloscopio el ciclo se ve primero apretado y luego se ensancha. |
+| **LFO → Cutoff** | El brillo sube y baja cíclicamente: lento = "wah" que respira; 1/8 o 1/16 = wobble de dubstep. | Los agudos aparecen y desaparecen al ritmo del LFO. |
+| **LFO → Pitch** (1–4 %) | Vibrato: como un cantante o un violinista. Mucho amount = sirena. | En el EQ, cada armónico se mueve de lado a lado. |
+| **LFO → Volume** | Trémolo (seno) o "trance gate" (cuadrado, sincronizado): el sonido se corta en ritmo. | En Wave Candy el volumen late como un corazón. |
+| **LFO → Position** | El timbre cambia solo: con *Vowels*, el sinte "habla" (a-e-i-o-u). | La forma de onda del visor no cambia (muestra la perilla), pero en el osciloscopio sí. |
+| **Forma del LFO** | Sine: suave. Triangle: parejo. Saw: rampa y salto (sube-sube-¡cae!). Square: dos estados. S&H: saltos al azar. | La curva azul del visor y el punto blanco que la recorre. |
+| **Rate / Division** | Más rápido = más nervioso. Sync hace que el movimiento sea parte del ritmo. | El punto blanco del visor va más rápido. |
+| **Free / Retrigger** | Retrigger: cada nota empieza su ciclo igual. Free: todas las notas pulsan juntas, pegadas al compás. | Con Retrigger el punto vuelve al inicio con cada nota. |
+| **Velocity → Cutoff / Volume** | Tocar más fuerte = más brillante / más fuerte, como un instrumento real. | Más agudos en las notas acentuadas. |
+| **Key → Cutoff** | El brillo sigue a la nota (el key tracking de la Fase 4, pero con amount negativo también puedes invertirlo). | La "montaña" de armónicos se mueve con la nota. |
+| **Mod Wheel / Aftertouch → algo** | Tú controlas el movimiento en vivo con el teclado MIDI. | — |
+
+### Ejercicio de escucha guiado
+Montaje: **Fruity Parametric EQ 2** y **Wave Candy** en el canal del Mixer, como siempre. En Undertow: *Basic Shapes*,
+Position **67 %** (sierra), Voices **8**, Env 1: Attack 5 ms, Decay 500 ms, Sustain 100 %, Release 150 ms.
+Filtro **On**, **Low Pass 24 dB**, Cutoff **300 Hz**, Resonance **30 %**. Tempo del proyecto: **120 BPM**.
+Todo lo nuevo está en la pestaña **Modulación** (arriba a la derecha).
+
+1. **La envolvente del filtro.** Ruta 1: **Env 2 → Filter Cutoff, +40 %**. Env 2: Attack 1 ms, Decay **300 ms**,
+   Sustain **0 %**, Release 150 ms. Toca **C4** varias veces: cada nota hace "piuu". Mueve el Decay de la Env 2 a
+   **60 ms** (pluck seco) y a **1.5 s** (se cierra despacio). Sube el Sustain a **50 %** y mantén la nota: el filtro
+   se queda a medio abrir. Cambia el amount a **−40 %** y sube el Cutoff a 5 kHz: ahora la nota empieza oscura y
+   se abre (al revés).
+2. **LFO sobre el filtro.** Borra la ruta 1 (Source *None*). Ruta 1: **LFO 1 → Filter Cutoff, +20 %** (±2 octavas).
+   LFO 1: *Sine*, **Sync apagado**, Rate **0.5 Hz**. Mantén un acorde: el brillo "respira". Sube el Rate a 2, 6 y 12 Hz:
+   de "wah" lento a wobble y a un trémolo de brillo. Prueba las 6 formas con Rate 2 Hz y mira el punto del visor.
+3. **Sincronizado al tempo.** Enciende **Sync**, Division **1/4**. Pon un patrón de batería sencillo (bombo en cada
+   negra) y dale a Play: el wobble cae con el bombo. Prueba 1/8, 1/16 y **1/8 T** (tresillos: suena "a galope").
+4. **Free contra Retrigger.** Mode **Retrigger**, Division 1/2. Toca un acorde nota por nota, con medio segundo entre
+   cada una: cada nota tiene su propio ciclo y se "desordenan". Cambia a **Free** y repite: ahora todas pulsan juntas.
+5. **Vibrato.** Borra las rutas. Ruta 1: **LFO 2 → Osc A Pitch** y escribe **1.25** en la casilla del amount
+   (≈ ±0.3 semitonos). LFO 2: *Sine*, Sync apagado, Rate **5.5 Hz**, Mode Retrigger. Filtro abierto (Cutoff 20 kHz).
+   Toca **A5 (440 Hz)**: vibrato de cantante. Sube a **4.17 %** (±1 semitono) y a **25 %**: sirena. Mira en el EQ cómo los
+   armónicos se mueven de lado a lado.
+6. **Sample & Hold.** LFO 2 en *Sample & Hold*, Sync, **1/16**. Ruta 1 cámbiala a **LFO 2 → Filter Cutoff, +25 %**, con
+   Resonance **60 %** y Cutoff 800 Hz: el sonido "de computadora de película".
+7. **Trance gate.** Ruta 1: **LFO 1 → Volume, −100 %**, LFO 1 *Square*, Sync, **1/16**, Mode Free. Mantén un acorde con
+   Play: el pad se corta en semicorcheas. Debe sonar como un corte limpio, **sin clics**. Fíjate en algo: el LFO es
+   bipolar, así que con −100 % el volumen alterna entre **0** (silencio) y **el doble** (+6 dB). Baja el Master 6 dB
+   para compensar. (Con −50 % el volumen alterna entre la mitad y 1.5 veces: un trémolo en vez de un corte.)
+8. **Velocity.** Ruta 2: **Velocity → Filter Cutoff, +30 %**. En el Piano Roll pon varias notas con velocities
+   distintas (panel de abajo): las fuertes suenan 3 octavas más brillantes.
+9. **Artefactos a buscar:** clics al cambiar una ruta con el amount alto, al usar LFO cuadrado o S&H sobre Volume o
+   Cutoff (no debería haber); saltos de brillo al hacer vibrato en notas muy agudas (≥ C8), que ya no deberían oírse;
+   y que el wobble sincronizado no se "desfase" del bombo después de varios compases.
+
+### Recetas
+**1. Acid con "squelch" (acid house, estilo TB-303) — completa la receta de la Fase 4**
+1. Parte de la *Línea ácida* de la Fase 4: *Basic Shapes* 67 %, Voices **1**, Filtro **Low Pass 24 dB**,
+   Resonance **75 %**, Drive **45 %**, Key Track **30 %**. Baja el Cutoff a **250 Hz**.
+2. Env 1: Attack **1 ms**, Decay **200 ms**, Sustain **40 %**, Release **40 ms**.
+3. Env 2: Attack **1 ms**, Decay **180 ms**, Sustain **0 %**, Release **40 ms**.
+   Ruta 1: **Env 2 → Filter Cutoff, +40 %** (cada nota abre el filtro 4 octavas, de 250 Hz a 4 kHz, y lo cierra).
+4. Ruta 2: **Velocity → Filter Cutoff, +20 %**. En el Piano Roll deja casi todas las notas con velocity baja y pon
+   "acentos" (velocity alta) en 1 de cada 3 o 4: esas notas "chillan" hasta 2 octavas más.
+5. Piano Roll a **125 BPM**: semicorcheas sobre **C3–C4** con alguna octava arriba. Automatiza además el Cutoff
+   (como en la Fase 4) de 150 Hz a 1 kHz a lo largo de 8 compases.
+6. *Por qué funciona:* el "squelch" de la 303 es una envolvente rápida sobre un filtro muy resonante: el pico de
+   resonancia barre los armónicos en cada nota. La automatización lenta del cutoff mueve **dónde** empieza ese
+   barrido, y la velocity decide **qué notas** gritan.
+
+**2. Wobble bass (dubstep, 140 BPM)**
+1. *Basic Shapes*, Position **85 %** (entre sierra y cuadrada: mucho cuerpo y armónicos impares). Voices **1**.
+2. Env 1: Attack **5 ms**, Decay 500 ms, Sustain **100 %**, Release **80 ms**.
+3. Filtro **Low Pass 24 dB**, Cutoff **300 Hz**, Resonance **45 %**, Drive **50 %**, Key Track 0 %.
+4. LFO 1: *Sine*, Mode **Free**, **Sync**, Division **1/8**. Ruta 1: **LFO 1 → Filter Cutoff, +30 %**
+   (±3 octavas: de 37 Hz a 2.4 kHz). Ruta 2: **LFO 1 → Osc A Position, −15 %** (cuando el filtro se abre, la onda
+   se vuelve más sierra: el "wub" gana mordida).
+5. Piano Roll a **140 BPM**: notas largas en **F3 (87 Hz)** y **G#3 (104 Hz)**. Clic derecho en *LFO 1 Division* →
+   *Create automation clip*: cambia entre 1/8, 1/16 y 1/8 T cada compás. **Ese cambio de división es el "fraseo"
+   del wobble.**
+6. *Por qué funciona:* el LFO abre y cierra el filtro en ritmo ("wub-wub"). En modo Free + Sync el wobble está
+   pegado al compás: siempre cae con la batería, aunque la nota empiece tarde.
+
+**3. Pad que respira (ambient, cinemático)**
+1. *Vowels*, Position **50 %**. Voices **8**. Env 1: Attack **800 ms**, Decay 1 s, Sustain **90 %**, Release **1.5 s**.
+2. Filtro **Low Pass 12 dB**, Cutoff **1.5 kHz**, Resonance **20 %**.
+3. LFO 1: *Triangle*, Mode **Free**, Sync apagado, Rate **0.15 Hz** (un ciclo cada ~7 s). Ruta 1:
+   **LFO 1 → Osc A Position, +40 %**: el pad recorre las vocales despacio (de 10 % a 90 % de la tabla).
+4. Env 3: Attack **2 s**, Decay 1 s, Sustain **100 %**, Release 1.5 s. Ruta 2: **Env 3 → Filter Cutoff, +15 %**:
+   al mantener el acorde, el pad se abre 1.5 octavas poco a poco.
+5. LFO 2: *Sine*, Retrigger, Sync apagado, Rate **4.5 Hz**. Ruta 3: **LFO 2 → Osc A Pitch, 0.8 %** (vibrato casi
+   imperceptible, ±0.2 semitonos: le quita lo "de máquina").
+6. Piano Roll: acordes largos (4 compases cada uno) en la zona **C4–C6**.
+7. *Por qué funciona:* un sonido "vivo" nunca está quieto. Tres movimientos lentos y a velocidades distintas (7 s,
+   2 s y 4.5 Hz) no se repiten nunca igual, y el oído lo percibe como algo orgánico.
+
+### Reto sin receta
+**El "sidechain falso".** En el EDM, los pads y bajos "bombean": bajan de golpe cuando suena el bombo y vuelven a
+subir antes del siguiente (se hace con un compresor con sidechain). Tu reto: conseguir ese bombeo **solo con
+Undertow**, sin ningún plugin extra, sobre un pad de acordes a **128 BPM** con un bombo en cada negra.
+El volumen debe caer justo en el bombo y recuperarse de forma suave (no un corte seco como el trance gate).
+Extra: que el filtro también se cierre un poco en cada golpe, para que el bombeo se note más.
+Inténtalo primero; las pistas vendrán después.
+
+### Vocabulario
+- **Modulación.** Hacer que un parámetro cambie solo. *Ejemplo:* el "wah" automático de casi cualquier pad de trance.
+- **Fuente / destino / amount.** Qué mueve, qué se mueve y cuánto. *Ejemplo:* "Env 2 → Cutoff al 40 %" es la frase
+  típica en un tutorial de Serum o Vital.
+- **Matriz de modulación.** La tabla de rutas fuente → destino. *Ejemplo:* la pestaña *Matrix* de Serum.
+- **Envolvente de filtro.** Una envolvente conectada al cutoff. *Ejemplo:* el "bwow" de los bajos de synthwave y
+  el pluck de "Faded" (Alan Walker).
+- **LFO.** Oscilador lento que mueve parámetros. *Ejemplo:* el wobble de "Scary Monsters and Nice Sprites" (Skrillex).
+- **Rate / tempo sync.** Velocidad del LFO, en Hz o en figuras musicales. *Ejemplo:* los wobbles a 1/8 y 1/16
+  del dubstep.
+- **Retrigger / free-running.** El LFO reinicia con cada nota / corre libre para todas. *Ejemplo:* un pad con
+  LFO libre "respira" siempre al mismo ritmo aunque cambien los acordes.
+- **One shot.** Un LFO que da una sola vuelta. *Ejemplo:* efectos de "subida" o "caída" dibujados a mano en Serum.
+- **Sample & Hold.** Valores al azar, uno por ciclo. *Ejemplo:* los "bleeps" de computadora de las películas de
+  ciencia ficción de los 70–80.
+- **Unipolar / bipolar.** Que solo sube (0..1) o que sube y baja (−1..+1). *Ejemplo:* una envolvente es unipolar;
+  un LFO, bipolar.
+- **Vibrato.** Oscilación del tono. *Ejemplo:* la voz de un cantante de ópera o el violín.
+- **Trémolo.** Oscilación del volumen. *Ejemplo:* la guitarra de "Boulevard of Broken Dreams" (Green Day).
+- **Trance gate.** Volumen cortado en ritmo con un LFO cuadrado. *Ejemplo:* los pads entrecortados del trance de
+  los 2000 (Tiësto, ATB).
+- **Wobble.** LFO rápido y sincronizado sobre el cutoff de un bajo. *Ejemplo:* todo el brostep de 2010–2012.
+- **Mod wheel / aftertouch.** Controles expresivos del teclado MIDI. *Ejemplo:* el vibrato que un tecladista añade
+  con la rueda al final de una nota larga.
+
+### Retos completados
+- [ ] Reto Fase 5 — sidechain falso con modulación
