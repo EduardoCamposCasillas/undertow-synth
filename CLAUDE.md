@@ -92,7 +92,7 @@ Source/
 - [x] Fase 1 — Proyecto base: CMake + JUCE, compila VST3 y Standalone, carga en FL, onda senoidal con MIDI.
 - [x] Fase 2 — Polifonía y envolvente ADSR (sin clics, voice stealing correcto).
 - [x] Fase 3 — Oscilador wavetable sin aliasing (mipmaps por octava, interpolación, morphing de posición).
-- [ ] Fase 4 — Filtros ZDF/TPT: LP/HP/BP 12 y 24 dB, resonancia, drive, key tracking.
+- [x] Fase 4 — Filtros ZDF/TPT: LP/HP/BP 12 y 24 dB, resonancia, drive, key tracking.
 - [ ] Fase 5 — Modulación: 2 envolventes extra, LFOs sincronizados al tempo, matriz de modulación.
 - [ ] Fase 6 — Segundo oscilador, sub, ruido, unison (hasta 16 voces) con detune y ancho estéreo.
 - [ ] Fase 7 — FM y warp de osciladores: FM/PM entre osciladores (OSC B → OSC A, ruido → OSC, sub → OSC),
@@ -142,7 +142,7 @@ Fase 3 COMPLETADA (2026-09-24). Probada por el usuario en FL Studio.
 - Límite conocido: el paso de mipmap es por octava; con pitch bend/glide (Fase 5) podría oírse un leve salto de
   brillo al cruzar un límite. Solución prevista: mezclar dos niveles vecinos.
 
-Fase 4 IMPLEMENTADA (2026-09-24), PENDIENTE de que el usuario la pruebe en FL Studio.
+Fase 4 COMPLETADA (2026-09-24). Probada por el usuario en FL Studio: suena bien.
 - `dsp/Filter.h`: `SvfStage` (SVF TPT/ZDF de 2 polos: LP/BP/HP a la vez) y `Filter` (drive → etapa 1 → etapa 2).
   12 dB = 1 etapa (Q Butterworth 0.707); 24 dB = 2 etapas (Q 0.541 y 1.307). La resonancia multiplica el Q de la
   etapa resonante hasta ×17 (exponencial; 12 dB: Q 12, pico +15 dB tras compensar). Compensación LP/HP: −6 dB en la
@@ -164,4 +164,4 @@ Fase 4 IMPLEMENTADA (2026-09-24), PENDIENTE de que el usuario la pruebe en FL St
 - Límite conocido: el drive no tiene oversampling. Alias medido (sierra, 48 kHz, drive 100 %): −55 dB a 110 Hz,
   −43 dB a 440 Hz, −27 dB a 1760 Hz. Solución prevista: oversampling en Fase 7/8.
 
-Siguiente: Fase 5 (modulación), cuando el usuario confirme la Fase 4 en FL Studio.
+Siguiente: Fase 5 (modulación), pendiente de que el usuario la inicie.
