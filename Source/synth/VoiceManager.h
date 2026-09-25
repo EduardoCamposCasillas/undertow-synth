@@ -28,6 +28,7 @@ public:
     void setVelocitySensitivity (float amount) noexcept; // 0 = ignora la velocity, 1 = sensibilidad total
     void setWavetable (const dsp::Wavetable* table) noexcept; // sin tabla, las voces no suenan
     void setWavetablePosition (float position) noexcept;      // 0..1, recorre los frames de la tabla
+    void setFilterSettings (const FilterSettings& settings) noexcept;
 
     void noteOn (int midiNote, float velocity) noexcept;
     void noteOff (int midiNote) noexcept;
@@ -47,6 +48,7 @@ private:
     [[nodiscard]] float velocityToGain (float velocity) const noexcept;
 
     std::array<Voice, voicePoolSize> voices;
+    FilterSettings filterSettings;
     int polyphony = 8;
     float velocitySensitivity = 0.5f;
     bool sustainPedalDown = false;

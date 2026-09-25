@@ -44,6 +44,17 @@ void VoiceManager::setWavetablePosition (float position) noexcept
         voice.setWavetablePosition (position);
 }
 
+void VoiceManager::setFilterSettings (const FilterSettings& settings) noexcept
+{
+    // Se llama una vez por bloque: si nada cambió no se recalculan los objetivos de 32 filtros.
+    if (settings == filterSettings)
+        return;
+
+    filterSettings = settings;
+    for (auto& voice : voices)
+        voice.setFilterSettings (settings);
+}
+
 float VoiceManager::velocityToGain (float velocity) const noexcept
 {
     // Curva cuadrática: velocity 64 (~0.5) da 0.25 (≈ -12 dB). Una curva lineal comprime

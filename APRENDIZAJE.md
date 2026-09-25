@@ -303,3 +303,129 @@ Inténtalo primero; las pistas vendrán después.
 
 ### Retos completados
 - [ ] Reto Fase 3 — lead de 8 bits
+
+---
+
+## Fase 4 — Filtros
+
+### Conceptos aprendidos
+- **Síntesis sustractiva.** Se empieza con una onda llena de armónicos (sierra, cuadrada) y se **quitan** los que
+  sobran con un filtro. Es la receta de casi todos los sintes clásicos (Moog, Juno, TB-303) y sigue siendo la base
+  de Serum y Vital: el wavetable da el "material" y el filtro lo esculpe.
+- **Tipos de filtro.**
+  - **Low-pass (LP):** deja pasar los graves y quita los agudos. Es el más usado: oscurece, suaviza, "cierra" el sonido.
+  - **High-pass (HP):** lo contrario, quita los graves. Adelgaza, deja el sonido "sin cuerpo" (radio, teléfono).
+  - **Band-pass (BP):** solo deja una franja alrededor del cutoff. Suena nasal, como a través de un tubo.
+- **Cutoff.** La frecuencia donde el filtro empieza a actuar. Justo en el cutoff (sin resonancia) la señal ya baja
+  **−3 dB**; a partir de ahí cae cada vez más.
+- **Pendiente (12 o 24 dB por octava).** Cuánto baja el volumen por cada octava más allá del cutoff.
+  Con 12 dB, un armónico 3 octavas por encima baja 36 dB; con 24 dB baja 72 dB. El de 12 dB suena más suave y
+  "abierto"; el de 24 dB, más oscuro y definido (el sonido Moog). Un filtro de 12 dB tiene **2 polos**; el de 24 dB,
+  **4 polos** (en el código: dos filtros de 12 dB en cadena).
+- **Resonancia (Q).** Realimenta la señal alrededor del cutoff y crea un **pico**: esas frecuencias se refuerzan
+  en vez de bajar. Con poca resonancia el sonido gana "presencia"; con mucha, el filtro "canta" una nota propia y al
+  moverlo se oye el típico "wiuuu". En Undertow, a resonancia máxima el pico está a **+15 dB**.
+  Para que el volumen no se dispare, los graves bajan ~6 dB al subir la resonancia (igual que en un filtro Moog).
+- **Por qué un filtro ZDF/TPT.** Un filtro analógico es un circuito con realimentación. La forma "fácil" de
+  digitalizarlo mete un retraso de una muestra en esa realimentación, y eso desafina el cutoff y lo vuelve inestable
+  al modular rápido. El ZDF (*zero-delay feedback*) resuelve el circuito "tal cual" en cada muestra. Resultado medido:
+  el filtro digital coincide con la teoría con un error de **0.0001 dB**, el cutoff cae exactamente donde se pide
+  (también a 15 kHz) y no explota aunque el cutoff salte en cada muestra (clave para la Fase 5).
+- **Drive (saturación).** Sube el volumen **antes** del filtro y lo pasa por una curva *tanh* que redondea los picos,
+  como un amplificador saturado. Añade armónicos nuevos (más "mordida", más agresivo) y comprime el sonido.
+  Como está antes del filtro, el low-pass después "doma" los armónicos más agudos que crea la saturación.
+- **Key tracking.** Con 0 %, el cutoff es el mismo para todas las notas: las graves suenan brillantes y las agudas,
+  apagadas (pierden armónicos). Con 100 %, el cutoff sube una octava por cada octava de la nota (la referencia es
+  **C5**): todo el teclado suena con el mismo "color".
+- **Límite actual:** el drive todavía no tiene oversampling. Con drive alto en notas muy agudas (≥ C8) puede oírse
+  algo de aliasing (tonos metálicos). En graves y medios queda muy por debajo del sonido. Se resolverá en la Fase 7/8.
+
+### Qué hace cada control al sonido
+| Control | Qué se oye | En el analizador / osciloscopio |
+|---|---|---|
+| **On** | Enciende el filtro (con un fundido de 5 ms, sin clic). Apagado, el sonido es el de la Fase 3. | La curva naranja del visor pasa de una línea plana tenue a la forma del filtro. |
+| **Type: Low Pass** | Bajar el cutoff oscurece: brillante → cálido → apagado → "bajo el agua". | En el EQ desaparecen las líneas de la derecha (agudos). En Wave Candy la sierra se redondea hasta parecer un seno. |
+| **Type: High Pass** | Subir el cutoff quita el cuerpo: lleno → delgado → "de radio" → solo un siseo. | Desaparecen las líneas de la izquierda. La fundamental se va primero. |
+| **Type: Band Pass** | Solo una franja: nasal, "de teléfono" o "de tubo". Moverlo suena a un pedal wah. | Solo queda una "montaña" de armónicos alrededor del cutoff. |
+| **Slope 12 / 24 dB** | 12 dB: el corte es suave y queda algo de brillo. 24 dB: el corte es más marcado y oscuro. | Con 24 dB la curva del visor cae el doble de empinada. |
+| **Cutoff** | El "brillo" del sonido. Es la perilla más expresiva de un sinte: moverla es el "filter sweep". | El punto donde la curva empieza a bajar. |
+| **Resonance** | 0 %: neutro. 30–50 %: más presencia y carácter. 70–100 %: silbido, "wiuuu" al mover el cutoff, sonido ácido. | Un pico en el cutoff: el armónico que cae ahí sobresale sobre los demás. |
+| **Drive** | Más cálido y denso al principio; con más drive, agresivo y comprimido. Las notas suaves y fuertes se igualan. | Aparecen armónicos nuevos (en un seno: 3.º, 5.º…). En el osciloscopio los picos se aplanan. |
+| **Key Track** | 0 %: las notas agudas suenan más apagadas que las graves. 100 %: todas suenan igual de brillantes. | Con 100 %, al subir una octava la "montaña" de armónicos se mueve una octava junto con la nota. |
+
+### Ejercicio de escucha guiado
+1. Montaje de siempre: **Fruity Parametric EQ 2** (analizador) y **Wave Candy** en el canal del Mixer.
+   *Basic Shapes*, Position **67 %** (sierra). Attack 5 ms, Sustain 100 %, Release 150 ms.
+2. **El barrido:** enciende el filtro (**On**, Low Pass, 24 dB, Resonance 0 %). Mantén un **C4** (130.8 Hz) y baja
+   el Cutoff despacio de 20 kHz a 50 Hz. En el EQ mira cómo se "apagan" las líneas de derecha a izquierda. Cuando
+   el cutoff pasa por debajo de 131 Hz, hasta la fundamental empieza a bajar y el sonido casi desaparece.
+3. **12 contra 24 dB:** deja el Cutoff en **800 Hz** y alterna Slope entre 12 y 24 dB. El de 12 dB deja un
+   "aire" brillante; el de 24 dB es más redondo y oscuro. Compara las dos curvas en el visor del plugin.
+4. **Resonancia:** Cutoff 800 Hz, Slope 24 dB. Sube Resonance a 0, 30, 60 y 90 %. En cada paso barre el Cutoff
+   entre 200 Hz y 3 kHz. Con 90 % oirás cómo el filtro "canta" cada armónico que atraviesa (como una escala de
+   armónicos). En el EQ, el armónico que cae en el pico sobresale.
+5. **High-pass y band-pass:** cambia a High Pass y sube el Cutoff de 20 Hz a 2 kHz: el sonido pierde el cuerpo
+   hasta sonar como una radio. Luego Band Pass con Resonance 50 %: barre el Cutoff y escucha el efecto "wah".
+6. **Key tracking:** Low Pass 24 dB, Cutoff **500 Hz**, Key Track **0 %**. Toca **C3 (65 Hz)**, **C5** y **C7** seguidas:
+   la grave suena brillante y la aguda, apagada. Sube Key Track a **100 %** y repite: ahora las tres tienen el
+   mismo color (solo cambia la altura).
+7. **Drive:** Low Pass 24 dB, Cutoff 20 kHz, Position **0 %** (seno). Sube Drive de 0 a 100 % mientras miras el
+   osciloscopio: el seno se aplana hasta parecer una cuadrada y en el EQ aparecen los armónicos impares.
+   Después vuelve a la sierra y prueba Drive 40 % con Cutoff 600 Hz: el bajo suena más grueso y "empuja".
+8. **Artefactos a buscar:** clics al encender/apagar el filtro, al cambiar de tipo o de pendiente (no debería
+   haber ninguno); zipper al girar Cutoff rápido (no debería haberlo); saltos de volumen extraños al subir la
+   resonancia; y con Drive 100 % en notas por encima de C8, algún tono metálico (es el límite conocido).
+
+### Recetas
+**Bajo analógico "Moog" (synthwave, funk, house)**
+1. *Basic Shapes*, Position **67 %** (sierra). Voices **1** y Velocity **30 %**, como en el bajo de la Fase 3.
+2. Filtro **On**, **Low Pass 24 dB**, Cutoff **450 Hz**. Con 24 dB la sierra pierde su "zumbido" y queda un bajo
+   redondo, pero todavía con algo de ataque.
+3. Resonance **25 %**: un pequeño pico cerca del cutoff le da "voz" sin que silbe.
+4. Drive **30 %**: engorda el sonido y lo iguala en volumen, como un circuito analógico empujado.
+5. Key Track **50 %**: las notas agudas del riff no se apagan, y las graves no se vuelven demasiado brillantes.
+6. Attack **2 ms**, Decay **300 ms**, Sustain **60 %**, Release **60 ms**.
+7. Piano Roll: corcheas entre **C3 (65 Hz)** y **C4 (131 Hz)**, con alguna octava arriba.
+8. *Por qué funciona:* la sierra da los armónicos y el low-pass de 24 dB deja solo los primeros. Esos son los que
+   dan "cuerpo" en un bajo. El drive añade la calidez del hardware.
+
+**Línea ácida (acid house, estilo TB-303)**
+1. *Basic Shapes*, Position **100 %** (cuadrada) o **67 %** (sierra): la 303 tenía las dos.
+2. Voices **1**. Attack **1 ms**, Decay **200 ms**, Sustain **40 %**, Release **40 ms**: notas cortas y con golpe.
+3. Filtro **Low Pass 24 dB**, Cutoff **400 Hz**, Resonance **75 %**, Drive **45 %**, Key Track **30 %**.
+4. Piano Roll a **125 BPM**: semicorcheas repetitivas sobre **C3–C4**, alternando octavas y alguna nota suelta.
+5. Clic derecho en Cutoff → *Create automation clip*. Dibuja una curva que suba de 250 Hz a 3 kHz y vuelva a bajar
+   en 8 compases. **Esa curva ES el sonido acid**.
+6. *Por qué funciona:* la resonancia alta hace que el filtro "chille" en el cutoff y el drive endurece ese chillido.
+   Al mover el cutoff, el pico va pasando por los armónicos y crea el "wau-wau" característico.
+   (En la Fase 5 una envolvente moverá el cutoff en cada nota: el "squelch" completo.)
+
+### Reto sin receta
+El truco más famoso de la música electrónica: **un pad que suena "detrás de una pared"** (como la música de la
+fiesta del vecino) durante un build-up de 8 compases, y **"se abre la puerta"** justo en el drop.
+Debe sonar apagado y lejano al principio, sin perder las notas, y abrirse con tensión creciente.
+Extra: que en los últimos 2 compases antes del drop haya algo que "silbe" y suba.
+Inténtalo primero; las pistas vendrán después.
+
+### Vocabulario
+- **Síntesis sustractiva.** Crear sonidos quitando armónicos a una onda rica. *Ejemplo:* casi todos los bajos y
+  pads de los 80 (Minimoog, Juno-106).
+- **Filtro low-pass / high-pass / band-pass.** Dejan pasar los graves / los agudos / una franja.
+  *Ejemplo:* el sonido "de radio" de una voz en un intro es un high-pass + low-pass (una banda estrecha).
+- **Cutoff (frecuencia de corte).** Donde el filtro empieza a actuar. *Ejemplo:* el "filter sweep" de un
+  build-up de EDM es el cutoff subiendo.
+- **Pendiente (dB/octava) y polos.** Cuánto baja el sonido por octava. 2 polos = 12 dB, 4 polos = 24 dB.
+  *Ejemplo:* el filtro de 24 dB del Minimoog es la razón de su bajo tan redondo.
+- **Resonancia (Q).** Pico de volumen en el cutoff. *Ejemplo:* el "squelch" de la TB-303 en "Acid Tracks" (Phuture).
+- **Auto-oscilación.** Cuando la resonancia es tan alta que el filtro suena solo, como un seno.
+  (Undertow todavía no llega a auto-oscilar.) *Ejemplo:* los "zaps" y silbidos de los sintes analógicos.
+- **Drive / saturación.** Amplificar hasta que la señal se "aplana" y gana armónicos.
+  *Ejemplo:* el bajo gordo y sucio de Daft Punk en "Da Funk".
+- **Key tracking.** Hacer que el cutoff siga a la nota. *Ejemplo:* en un piano eléctrico o un pluck que tiene el
+  mismo brillo en todo el teclado.
+- **Filter sweep.** Mover el cutoff a lo largo del tiempo. *Ejemplo:* los intros filtrados del French house
+  (Stardust, "Music Sounds Better With You").
+- **ZDF / TPT.** Una forma de programar filtros digitales que se comportan como los analógicos, incluso al moverlos rápido.
+
+### Retos completados
+- [ ] Reto Fase 4 — pad "detrás de una pared" que se abre en el drop

@@ -32,6 +32,7 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
     } };
 
     addAndMakeVisible (oscillatorGroup);
+    addAndMakeVisible (filterGroup);
     addAndMakeVisible (envelopeGroup);
     addAndMakeVisible (voiceGroup);
 
@@ -75,12 +76,50 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
     wavetableParam = processor.getParameters().getRawParameterValue (id::oscAWavetable);
     positionParam = processor.getParameters().getRawParameterValue (id::oscAPosition);
 
+    // --- Filtro ---
+    addAndMakeVisible (filterOnButton);
+    filterOnAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        processor.getParameters(), id::filter1On, filterOnButton);
+
+    // Las opciones salen del propio parámetro: así la GUI nunca se desincroniza de la lista guardada.
+    const auto fillFromChoice = [this] (juce::ComboBox& box, const char* parameterId) {
+        if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (processor.getParameters().getParameter (parameterId)))
+            box.addItemList (choice->choices, 1);
+        addAndMakeVisible (box);
+    };
+    fillFromChoice (filterTypeBox, id::filter1Type);
+    fillFromChoice (filterSlopeBox, id::filter1Slope);
+    filterTypeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+        processor.getParameters(), id::filter1Type, filterTypeBox);
+    filterSlopeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+        processor.getParameters(), id::filter1Slope, filterSlopeBox);
+
+    constexpr std::array<KnobInfo, numFilterKnobs> filterInfos { {
+        { id::filter1Cutoff, "Cutoff" },
+        { id::filter1Resonance, "Resonance" },
+        { id::filter1Drive, "Drive" },
+        { id::filter1KeyTrack, "Key Track" },
+    } };
+    for (size_t i = 0; i < filterKnobs.size(); ++i)
+    {
+        auto& knob = filterKnobs[i];
+        knob.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, knobWidth - 10, 20);
+        addAndMakeVisible (knob.slider);
+        knob.label.setText (filterInfos[i].name, juce::dontSendNotification);
+        knob.label.setJustificationType (juce::Justification::centred);
+        addAndMakeVisible (knob.label);
+        knob.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+            processor.getParameters(), filterInfos[i].parameterId, knob.slider);
+    }
+    addAndMakeVisible (filterDisplay);
+
     activeVoicesLabel.setJustificationType (juce::Justification::centredRight);
     activeVoicesLabel.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
     addAndMakeVisible (activeVoicesLabel);
 
-    setSize (groupPadding * 3 + knobWidth * static_cast<int> (knobs.size()) + groupPadding * 4,
-             groupPadding * 3 + 32 + rowHeight * 2);
+    // El ancho lo marca la fila del filtro: opciones + 4 perillas + un visor de ~280 px.
+    setSize (groupPadding * 5 + wavetableColumnWidth + knobWidth * static_cast<int> (numFilterKnobs) + 280,
+             groupPadding * 4 + 32 + rowHeight * 3);
 
     startTimerHz (30); // la GUI consulta el estado; el audio nunca espera a la GUI
 }
@@ -102,6 +141,9 @@ void UndertowAudioProcessorEditor::timerCallback()
     // Se lee el valor del parámetro (no el de la perilla) para que el visor siga también la automatización.
     const auto& bank = processor.getWavetableBank();
     wavetableDisplay.setWavetable (&bank.get (static_cast<int> (wavetableParam->load())), positionParam->load());
+
+    const auto filter = processor.readFilterSettings();
+    filterDisplay.setResponse (filter.parameters, filter.enabled, processor.getCurrentSampleRate());
 }
 
 void UndertowAudioProcessorEditor::paint (juce::Graphics& g)
@@ -135,6 +177,30 @@ void UndertowAudioProcessorEditor::resized()
         positionKnob.slider.setBounds (knobColumn);
 
         wavetableDisplay.setBounds (inner.withTrimmedLeft (groupPadding));
+    }
+    area.removeFromTop (groupPadding);
+
+    // Fila 2: filtro (encendido, tipo y pendiente; perillas; curva de respuesta).
+    {
+        auto groupArea = area.removeFromTop (rowHeight);
+        filterGroup.setBounds (groupArea);
+        auto inner = groupArea.reduced (groupPadding, 0).withTrimmedTop (22).withTrimmedBottom (groupPadding);
+
+        auto optionsColumn = inner.removeFromLeft (wavetableColumnWidth).reduced (4, 0);
+        filterOnButton.setBounds (optionsColumn.removeFromTop (28));
+        optionsColumn.removeFromTop (6);
+        filterTypeBox.setBounds (optionsColumn.removeFromTop (28));
+        optionsColumn.removeFromTop (6);
+        filterSlopeBox.setBounds (optionsColumn.removeFromTop (28));
+
+        for (auto& knob : filterKnobs)
+        {
+            auto column = inner.removeFromLeft (knobWidth).withHeight (knobHeight + 20);
+            knob.label.setBounds (column.removeFromTop (20));
+            knob.slider.setBounds (column);
+        }
+
+        filterDisplay.setBounds (inner.withTrimmedLeft (groupPadding));
     }
     area.removeFromTop (groupPadding);
 

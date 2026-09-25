@@ -142,4 +142,26 @@ Fase 3 COMPLETADA (2026-09-24). Probada por el usuario en FL Studio.
 - Límite conocido: el paso de mipmap es por octava; con pitch bend/glide (Fase 5) podría oírse un leve salto de
   brillo al cruzar un límite. Solución prevista: mezclar dos niveles vecinos.
 
-Siguiente: Fase 4 (filtros ZDF/TPT), pendiente de que el usuario la inicie.
+Fase 4 IMPLEMENTADA (2026-09-24), PENDIENTE de que el usuario la pruebe en FL Studio.
+- `dsp/Filter.h`: `SvfStage` (SVF TPT/ZDF de 2 polos: LP/BP/HP a la vez) y `Filter` (drive → etapa 1 → etapa 2).
+  12 dB = 1 etapa (Q Butterworth 0.707); 24 dB = 2 etapas (Q 0.541 y 1.307). La resonancia multiplica el Q de la
+  etapa resonante hasta ×17 (exponencial; 12 dB: Q 12, pico +15 dB tras compensar). Compensación LP/HP: −6 dB en la
+  banda de paso a resonancia máxima (tipo ladder). Band-pass normalizado a pico 0 dB. Sin auto-oscilación.
+  Todo suavizado 5 ms por muestra (cutoff en octavas); tipo y pendiente se cambian con fundido (la etapa 2 siempre
+  procesa). Coeficientes (tan) solo se recalculan mientras cutoff/resonancia se mueven.
+  Drive: tanh con hasta +30 dB, mezclado con la señal limpia en el primer 10 % (drive 0 = lineal exacto).
+  `filterMagnitude()`: respuesta teórica (la usa la GUI y la verifican los tests).
+- `keyTrackedCutoff()`: referencia C5 de FL (MIDI 60). Cada voz aplica su propio key tracking.
+- Voz: oscilador → filtro → envolvente. Filtro on/off con fundido de 5 ms; apagado no se procesa (= sonido Fase 3).
+- Parámetros nuevos (versionHint 3): filter1On (off), filter1Type (LP/HP/BP), filter1Slope (12/24, def. 24),
+  filter1Cutoff (20 Hz–20 kHz log, def. 2 kHz), filter1Resonance, filter1Drive, filter1KeyTrack (0 %).
+  El orden de las opciones de Type/Slope se guarda: no cambiarlo.
+- GUI: grupo "Filtro" (On, tipo, pendiente, 4 perillas) y visor de la curva (`gui/FilterResponseDisplay.h`).
+- Tests: medido vs teórico ≤ 0.0001 dB (3 tipos × 2 pendientes × 3 resonancias × 4 sample rates); −3 dB exactos en
+  el cutoff hasta 15 kHz; 3 octavas: −36.5 / −73 dB; estable con cutoff aleatorio por muestra y resonancia máxima;
+  cambios de tipo/pendiente/on-off sin clics. CPU: 16 voces sierra + filtro 24 dB en movimiento ≈ 5.5 % de un núcleo.
+- Release con 0 warnings (build limpio); pluginval strictness 10: SUCCESS.
+- Límite conocido: el drive no tiene oversampling. Alias medido (sierra, 48 kHz, drive 100 %): −55 dB a 110 Hz,
+  −43 dB a 440 Hz, −27 dB a 1760 Hz. Solución prevista: oversampling en Fase 7/8.
+
+Siguiente: Fase 5 (modulación), cuando el usuario confirme la Fase 4 en FL Studio.

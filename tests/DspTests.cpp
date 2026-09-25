@@ -8,10 +8,12 @@
 #include <complex>
 #include <cstdio>
 #include <numbers>
+#include <random>
 #include <vector>
 
 #include "dsp/AdsrEnvelope.h"
 #include "dsp/Fft.h"
+#include "dsp/Filter.h"
 #include "dsp/WavetableOscillator.h"
 #include "synth/VoiceManager.h"
 #include "synth/WavetableBank.h"
@@ -740,7 +742,325 @@ void testNewNoteStartsAtCurrentPosition()
         maxDifference = std::max (maxDifference, std::abs (used.processSample() - expected));
     CHECK (maxDifference < 1.0e-6f);
 }
+
+// --- Filtro ZDF / TPT --------------------------------------------------------------------------
+
+using undertow::dsp::Filter;
+using undertow::dsp::FilterParameters;
+using undertow::dsp::FilterSlope;
+using undertow::dsp::FilterType;
+
+Filter makeFilter (const FilterParameters& parameters, double sampleRate)
+{
+    Filter filter;
+    filter.setSampleRate (sampleRate);
+    filter.setParameters (parameters);
+    filter.reset();
+    return filter;
+}
+
+// Ganancia de un filtro a una frecuencia: se le pasa un seno, se espera a que el transitorio muera y se
+// mide la amplitud de la salida a esa frecuencia (correlación con ventana de Hann, inmune a la fase).
+double measuredGain (const FilterParameters& parameters, double hz, double sampleRate)
+{
+    auto filter = makeFilter (parameters, sampleRate);
+    const double step = 2.0 * pi * hz / sampleRate;
+    const int settle = static_cast<int> (1.0 * sampleRate);
+    const int length = static_cast<int> (0.5 * sampleRate);
+
+    for (int i = 0; i < settle; ++i)
+        (void) filter.processSample (static_cast<float> (std::sin (step * i)));
+
+    Complex sum;
+    double windowSum = 0.0;
+    for (int i = 0; i < length; ++i)
+    {
+        const int n = settle + i;
+        const double y = filter.processSample (static_cast<float> (std::sin (step * n)));
+        const double w = 0.5 - 0.5 * std::cos (2.0 * pi * i / (length - 1));
+        sum += y * w * std::polar (1.0, -step * n);
+        windowSum += w;
+    }
+    return 2.0 * std::abs (sum) / windowSum;
+}
+
+double toDb (double gain) { return 20.0 * std::log10 (std::max (gain, 1.0e-12)); }
+
+void testFilterMatchesTheory()
+{
+    std::printf ("El filtro medido coincide con la respuesta teórica (la curva de la GUI)\n");
+
+    double worstErrorDb = 0.0;
+    for (const double sr : sampleRates)
+        for (const auto type : { FilterType::lowPass, FilterType::highPass, FilterType::bandPass })
+            for (const auto slope : { FilterSlope::db12, FilterSlope::db24 })
+                for (const float resonance : { 0.0f, 0.5f, 1.0f })
+                    for (const float cutoff : { 200.0f, 2000.0f, 12000.0f })
+                        for (const double ratio : { 0.25, 0.7, 1.0, 1.5, 4.0 })
+                        {
+                            const double hz = cutoff * ratio;
+                            if (hz > 0.45 * sr)
+                                continue;
+
+                            const FilterParameters p { type, slope, cutoff, resonance, 0.0f };
+                            const double expectedDb = toDb (undertow::dsp::filterMagnitude (p, hz, sr));
+                            if (expectedDb < -90.0)
+                                continue; // por debajo de eso manda la precisión de float, no el filtro
+
+                            const double errorDb = std::abs (toDb (measuredGain (p, hz, sr)) - expectedDb);
+                            worstErrorDb = std::max (worstErrorDb, errorDb);
+                        }
+
+    std::printf ("  peor diferencia: %.4f dB\n", worstErrorDb);
+    CHECK (worstErrorDb < 0.05);
+}
+
+void testFilterCutoffAndSlopes()
+{
+    std::printf ("Cutoff a -3 dB y pendientes de 12 y 24 dB/octava\n");
+
+    for (const double sr : sampleRates)
+    {
+        // Sin resonancia, en el cutoff exacto: -3 dB (Butterworth) en 12 y en 24 dB. Gracias al prewarp
+        // de tan() se cumple también con cutoffs altos, donde un filtro "ingenuo" se desafina.
+        for (const auto slope : { FilterSlope::db12, FilterSlope::db24 })
+            for (const float cutoff : { 100.0f, 1000.0f, 15000.0f })
+            {
+                const double db = toDb (measuredGain ({ FilterType::lowPass, slope, cutoff, 0.0f, 0.0f }, cutoff, sr));
+                CHECK (std::abs (db + 3.01) < 0.05);
+            }
+
+        // Tres octavas por encima del cutoff: ~ -36 dB (12 dB/oct) y ~ -72 dB (24 dB/oct).
+        const double lp12 = toDb (measuredGain ({ FilterType::lowPass, FilterSlope::db12, 500.0f, 0.0f, 0.0f }, 4000.0, sr));
+        const double lp24 = toDb (measuredGain ({ FilterType::lowPass, FilterSlope::db24, 500.0f, 0.0f, 0.0f }, 4000.0, sr));
+        const double hp12 = toDb (measuredGain ({ FilterType::highPass, FilterSlope::db12, 4000.0f, 0.0f, 0.0f }, 500.0, sr));
+        const double hp24 = toDb (measuredGain ({ FilterType::highPass, FilterSlope::db24, 4000.0f, 0.0f, 0.0f }, 500.0, sr));
+        if (sr == 48000.0)
+            std::printf ("  48 kHz, 3 octavas: LP12 %.1f dB, LP24 %.1f dB, HP12 %.1f dB, HP24 %.1f dB\n", lp12, lp24, hp12, hp24);
+        CHECK (std::abs (lp12 + 36.0) < 1.5);
+        CHECK (std::abs (lp24 + 72.0) < 3.0);
+        CHECK (std::abs (hp12 + 36.0) < 1.5);
+        CHECK (std::abs (hp24 + 72.0) < 3.0);
+    }
+}
+
+void testResonance()
+{
+    std::printf ("La resonancia crea un pico en el cutoff; el band-pass mantiene su pico en 0 dB\n");
+
+    for (const auto slope : { FilterSlope::db12, FilterSlope::db24 })
+    {
+        const double flat = toDb (measuredGain ({ FilterType::lowPass, slope, 1000.0f, 0.0f, 0.0f }, 1000.0, 48000.0));
+        const double peak = toDb (measuredGain ({ FilterType::lowPass, slope, 1000.0f, 1.0f, 0.0f }, 1000.0, 48000.0));
+        const double bass = toDb (measuredGain ({ FilterType::lowPass, slope, 1000.0f, 1.0f, 0.0f }, 50.0, 48000.0));
+        std::printf ("  %s: en el cutoff %.1f dB -> %.1f dB con resonancia 100 %%, graves %.1f dB\n",
+                     slope == FilterSlope::db12 ? "12 dB" : "24 dB", flat, peak, bass);
+        CHECK (peak > 12.0);
+        CHECK (peak < 18.0);
+        CHECK (std::abs (bass + 6.15) < 0.3); // compensación: los graves bajan ~6 dB, como en un ladder
+
+        for (const float resonance : { 0.0f, 0.5f, 1.0f })
+        {
+            const double bandPeak = toDb (measuredGain ({ FilterType::bandPass, slope, 1000.0f, resonance, 0.0f }, 1000.0, 48000.0));
+            CHECK (std::abs (bandPeak) < 0.05);
+        }
+    }
+}
+
+void testFilterModulationIsStable()
+{
+    std::printf ("Estable con resonancia máxima y el cutoff saltando en cada muestra\n");
+
+    std::mt19937 random (1234);
+    std::uniform_real_distribution<float> unit (0.0f, 1.0f);
+
+    for (const double sr : sampleRates)
+        for (const auto slope : { FilterSlope::db12, FilterSlope::db24 })
+        {
+            auto filter = makeFilter ({ FilterType::lowPass, slope, 1000.0f, 1.0f, 1.0f }, sr);
+            float peak = 0.0f;
+            bool finite = true;
+
+            for (int i = 0; i < static_cast<int> (sr); ++i)
+            {
+                // Cutoff aleatorio entre 20 Hz y 20 kHz: el peor caso posible de modulación.
+                FilterParameters p { static_cast<FilterType> (i / 4000 % 3), slope,
+                                     20.0f * std::pow (1000.0f, unit (random)), 1.0f, unit (random) };
+                filter.setParameters (p);
+                const float input = (i / 50) % 2 == 0 ? 1.0f : -1.0f; // cuadrada llena de armónicos
+                const float y = filter.processSample (input);
+                finite = finite && std::isfinite (y);
+                peak = std::max (peak, std::abs (y));
+            }
+            CHECK (finite);
+            CHECK (peak < 30.0f);
+        }
+
+    // La etapa SVF sola, con coeficientes al azar sin suavizar: el TPT sigue siendo estable.
+    undertow::dsp::SvfStage stage;
+    float peak = 0.0f;
+    for (int i = 0; i < 200'000; ++i)
+    {
+        const auto c = undertow::dsp::SvfStage::Coefficients::make (std::tan (1.5f * unit (random)), 0.05f + 2.0f * unit (random));
+        const auto out = stage.process (unit (random) * 2.0f - 1.0f, c);
+        peak = std::max ({ peak, std::abs (out.lowPass), std::abs (out.highPass) });
+    }
+    CHECK (std::isfinite (peak));
+    CHECK (peak < 100.0f);
+}
+
+void testFilterChangesAreClickFree()
+{
+    std::printf ("Cambiar tipo, pendiente o cutoff con la nota sonando no produce clics\n");
+
+    // Un seno de 150 Hz avanza como mucho ~0.02 por muestra a 48 kHz; un clic sería un salto mucho mayor.
+    auto filter = makeFilter ({ FilterType::lowPass, FilterSlope::db12, 1000.0f, 0.3f, 0.0f }, 48000.0);
+    const double step = 2.0 * pi * 150.0 / 48000.0;
+
+    std::vector<float> signal;
+    const std::array<FilterParameters, 6> changes { {
+        { FilterType::highPass, FilterSlope::db12, 1000.0f, 0.3f, 0.0f },
+        { FilterType::highPass, FilterSlope::db24, 1000.0f, 0.3f, 0.0f },
+        // El seno NO cae en el pico de resonancia: allí pasar de band-pass (pico en 0 dB) a low-pass
+        // (pico en +15 dB) es un cambio de volumen real (suavizado), no un clic, y el salto medido crecería.
+        { FilterType::bandPass, FilterSlope::db24, 600.0f, 0.8f, 0.0f },
+        { FilterType::lowPass, FilterSlope::db24, 20000.0f, 0.0f, 0.0f },
+        { FilterType::lowPass, FilterSlope::db12, 40.0f, 1.0f, 1.0f },
+        { FilterType::lowPass, FilterSlope::db12, 5000.0f, 0.0f, 0.0f },
+    } };
+
+    int n = 0;
+    for (const auto& change : changes)
+    {
+        for (int i = 0; i < 2000; ++i, ++n)
+            signal.push_back (filter.processSample (static_cast<float> (std::sin (step * n))));
+        filter.setParameters (change);
+    }
+
+    std::printf ("  salto máximo entre muestras: %.4f\n", static_cast<double> (maxSampleJump (signal)));
+    CHECK (maxSampleJump (signal) < 0.06f);
+}
+
+void testDrive()
+{
+    std::printf ("Drive: 0 %% es lineal; al subirlo aparecen armónicos\n");
+
+    const double sr = 48000.0;
+    const double f0 = 187.5; // cae justo en un bin de la FFT de 2^15 muestras a 48 kHz
+    const int n = 1 << 15;
+    const auto render = [&] (float drive) {
+        auto filter = makeFilter ({ FilterType::lowPass, FilterSlope::db12, 20000.0f, 0.0f, drive }, sr);
+        std::vector<float> signal (n);
+        for (int i = 0; i < n; ++i)
+            signal[static_cast<size_t> (i)] = filter.processSample (static_cast<float> (0.8 * std::sin (2.0 * pi * f0 * i / sr)));
+        return magnitudeSpectrum (signal);
+    };
+
+    const double binHz = sr / n;
+    for (const float drive : { 0.0f, 0.3f, 1.0f })
+    {
+        const auto spectrum = render (drive);
+        const double thirdDb = toDb (componentLevel (spectrum, 3.0 * f0, binHz) / componentLevel (spectrum, f0, binHz));
+        std::printf ("  drive %3.0f %%: 3.er armónico a %.1f dB\n", static_cast<double> (drive * 100.0f), thirdDb);
+        if (drive == 0.0f)
+            CHECK (thirdDb < -90.0);
+        else
+            CHECK (thirdDb > -20.0);
+    }
+}
+
+// Informativo (sin CHECK): la saturación crea armónicos por encima de Nyquist que se reflejan.
+// Se mide para documentar el límite; el oversampling llegará con la distorsión (Fase 8).
+void reportDriveAliasing()
+{
+    std::printf ("Aliasing del drive (sierra, low-pass 24 dB abierto, 48 kHz), informativo\n");
+
+    const double sr = 48000.0;
+    const int n = 1 << 15;
+    for (const double f0 : { 110.0, 440.0, 1760.0 })
+        for (const float drive : { 0.3f, 1.0f })
+        {
+            const auto saw = renderOscillator (factoryBank().get (0), 2.0f / 3.0f, sr, f0, n);
+            auto filter = makeFilter ({ FilterType::lowPass, FilterSlope::db24, 20000.0f, 0.0f, drive }, sr);
+            std::vector<float> signal (saw.size());
+            for (size_t i = 0; i < saw.size(); ++i)
+                signal[i] = filter.processSample (saw[i]);
+            std::printf ("  %6.0f Hz, drive %3.0f %%: peor alias %.1f dB\n", f0, static_cast<double> (drive * 100.0f),
+                         worstAliasDb (magnitudeSpectrum (signal), f0, sr / n));
+        }
+}
+
+void testKeyTracking()
+{
+    std::printf ("Key tracking: el cutoff sigue a la nota\n");
+
+    using undertow::dsp::keyTrackedCutoff;
+    CHECK (std::abs (keyTrackedCutoff (1000.0f, 60, 1.0f) - 1000.0f) < 0.01f);
+    CHECK (std::abs (keyTrackedCutoff (1000.0f, 72, 1.0f) - 2000.0f) < 0.01f);
+    CHECK (std::abs (keyTrackedCutoff (1000.0f, 48, 1.0f) - 500.0f) < 0.01f);
+    CHECK (std::abs (keyTrackedCutoff (1000.0f, 84, 0.5f) - 2000.0f) < 0.01f);
+    CHECK (std::abs (keyTrackedCutoff (1000.0f, 84, 0.0f) - 1000.0f) < 0.01f);
+}
+
+void testFilterToggleInVoiceIsClickFree()
+{
+    std::printf ("Encender y apagar el filtro con notas sonando no produce clics\n");
+
+    VoiceManager manager;
+    prepareManager (manager, 48000.0);
+    manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
+    manager.noteOn (45, 1.0f); // A3 de FL, 110 Hz
+    renderSilently (manager, 4800);
+
+    undertow::synth::FilterSettings settings;
+    settings.parameters = { FilterType::highPass, FilterSlope::db24, 5000.0f, 0.0f, 0.0f }; // quita casi todo
+    std::vector<float> signal (48000, 0.0f);
+    for (int block = 0; block < 10; ++block)
+    {
+        settings.enabled = block % 2 == 1;
+        manager.setFilterSettings (settings);
+        manager.render (signal.data() + block * 4800, 4800);
+    }
+
+    std::printf ("  salto máximo entre muestras: %.5f\n", static_cast<double> (maxSampleJump (signal)));
+    CHECK (maxSampleJump (signal) < 0.01f);
+}
+
+void testFilterCpuCost()
+{
+    std::printf ("Coste de CPU: 16 voces de sierra con filtro 24 dB, drive y cutoff en movimiento\n");
+
+    for (const bool enabled : { false, true })
+    {
+        VoiceManager manager;
+        manager.prepare (48000.0);
+        manager.setWavetable (&factoryBank().get (0));
+        manager.setWavetablePosition (2.0f / 3.0f);
+        manager.setPolyphony (16);
+        manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
+        for (int note = 40; note < 56; ++note)
+            manager.noteOn (note, 1.0f);
+
+        const int blockSize = 256;
+        const int numBlocks = 48000 * 5 / blockSize; // 5 segundos de audio
+        std::vector<float> block (blockSize);
+        undertow::synth::FilterSettings settings { enabled, { FilterType::lowPass, FilterSlope::db24, 1000.0f, 0.5f, 0.5f }, 0.5f };
+
+        const auto start = std::chrono::steady_clock::now();
+        for (int b = 0; b < numBlocks; ++b)
+        {
+            // El cutoff cambia en cada bloque (como con automatización): obliga a recalcular coeficientes.
+            settings.parameters.cutoffHz = 300.0f + 3000.0f * static_cast<float> (b % 100) / 100.0f;
+            manager.setFilterSettings (settings);
+            std::fill (block.begin(), block.end(), 0.0f);
+            manager.render (block.data(), blockSize);
+        }
+        const double seconds = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
+        std::printf ("  filtro %s: %.1f %% de un núcleo\n", enabled ? "on " : "off", 100.0 * seconds / 5.0);
+    }
+}
 } // namespace
+
 
 int main()
 {
@@ -769,6 +1089,17 @@ int main()
     testPositionChangeIsSmooth();
     testTableSwitchIsClickFree();
     testNewNoteStartsAtCurrentPosition();
+
+    testFilterMatchesTheory();
+    testFilterCutoffAndSlopes();
+    testResonance();
+    testFilterModulationIsStable();
+    testFilterChangesAreClickFree();
+    testDrive();
+    reportDriveAliasing();
+    testKeyTracking();
+    testFilterToggleInVoiceIsClickFree();
+    testFilterCpuCost();
 
     if (failures == 0)
         std::printf ("\nTodos los tests pasaron.\n");

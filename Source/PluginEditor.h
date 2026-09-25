@@ -6,11 +6,12 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "gui/FilterResponseDisplay.h"
 #include "gui/WavetableDisplay.h"
 
 class UndertowAudioProcessor;
 
-// GUI funcional: oscilador, envolvente y voz. La GUI profesional llega en la Fase 9.
+// GUI funcional: oscilador, filtro, envolvente y voz. La GUI profesional llega en la Fase 9.
 class UndertowAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -44,6 +45,18 @@ private:
     undertow::gui::WavetableDisplay wavetableDisplay;
     std::atomic<float>* wavetableParam = nullptr;
     std::atomic<float>* positionParam = nullptr;
+
+    static constexpr size_t numFilterKnobs = 4;
+
+    juce::GroupComponent filterGroup { {}, "Filtro" };
+    juce::ToggleButton filterOnButton { "On" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> filterOnAttachment;
+    juce::ComboBox filterTypeBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> filterTypeAttachment;
+    juce::ComboBox filterSlopeBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> filterSlopeAttachment;
+    std::array<Knob, numFilterKnobs> filterKnobs;
+    undertow::gui::FilterResponseDisplay filterDisplay;
 
     juce::GroupComponent envelopeGroup { {}, "Envolvente de amplitud" };
     juce::GroupComponent voiceGroup { {}, "Voz" };

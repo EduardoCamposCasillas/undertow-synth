@@ -7,7 +7,7 @@
 #include "synth/VoiceManager.h"
 #include "synth/WavetableBank.h"
 
-// Fase 3: sintetizador polifónico con oscilador wavetable y envolvente ADSR de amplitud.
+// Fase 4: sintetizador polifónico: oscilador wavetable → filtro ZDF → envolvente ADSR de amplitud.
 class UndertowAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -47,6 +47,12 @@ public:
     // La GUI dibuja la forma de onda leyendo el mismo banco (es inmutable: leerlo desde otro hilo es seguro).
     const undertow::synth::WavetableBank& getWavetableBank() const noexcept { return *wavetableBank; }
 
+    // Lo lee la GUI para dibujar la curva del filtro con el sample rate real (atómico: lo escribe prepareToPlay).
+    double getCurrentSampleRate() const noexcept { return currentSampleRate.load (std::memory_order_relaxed); }
+
+    // Traduce los parámetros del filtro a la estructura del DSP. Se usa en el audio y en la GUI.
+    undertow::synth::FilterSettings readFilterSettings() const noexcept;
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
@@ -65,6 +71,13 @@ private:
     std::atomic<float>* masterParam = nullptr;
     std::atomic<float>* oscAWavetableParam = nullptr;
     std::atomic<float>* oscAPositionParam = nullptr;
+    std::atomic<float>* filterOnParam = nullptr;
+    std::atomic<float>* filterTypeParam = nullptr;
+    std::atomic<float>* filterSlopeParam = nullptr;
+    std::atomic<float>* filterCutoffParam = nullptr;
+    std::atomic<float>* filterResonanceParam = nullptr;
+    std::atomic<float>* filterDriveParam = nullptr;
+    std::atomic<float>* filterKeyTrackParam = nullptr;
 
     // Un solo banco para todas las instancias del plugin: se crea con la primera y se libera con la última.
     juce::SharedResourcePointer<undertow::synth::WavetableBank> wavetableBank;
@@ -72,6 +85,7 @@ private:
     undertow::synth::VoiceManager voiceManager;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> masterGain;
     std::atomic<int> activeVoiceCount { 0 };
+    std::atomic<double> currentSampleRate { 48000.0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UndertowAudioProcessor)
 };
