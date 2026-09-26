@@ -14,6 +14,8 @@ constexpr int headerHeight = 32;
 constexpr int lfoOptionsWidth = 130;
 constexpr int lfoRateWidth = 84;
 constexpr int matrixRowHeight = 30;
+constexpr int oscillatorColumnWidth = 150; // On, tabla y visor de la forma de onda
+constexpr int oscillatorKnobWidth = 72;    // 9 perillas por oscilador: un poco más estrechas que las demás
 
 // El ancho lo marca la fila del filtro: opciones + 4 perillas + un visor de 280 px (igual que en la Fase 4).
 constexpr int pageWidth = 2 * groupPadding + wavetableColumnWidth + 4 * knobWidth + filterDisplayWidth;
@@ -44,36 +46,71 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
     // --- Pestañas ---
     // Los literales con tildes se pasan con fromUTF8: un const char* suelto JUCE lo lee como Latin-1.
     modulationTab.setButtonText (juce::String::fromUTF8 ("Modulaci\xc3\xb3n"));
-    for (auto* tab : { &soundTab, &modulationTab })
+    for (auto* tab : { &oscillatorTab, &soundTab, &modulationTab })
     {
         tab->setClickingTogglesState (true);
         tab->setRadioGroupId (1);
         tab->setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff2b7a8c)); // la pestaña activa se resalta
         addAndMakeVisible (tab);
     }
-    soundTab.onClick = [this] { showPage (false); };
-    modulationTab.onClick = [this] { showPage (true); };
+    oscillatorTab.onClick = [this] { showPage (0); };
+    soundTab.onClick = [this] { showPage (1); };
+    modulationTab.onClick = [this] { showPage (2); };
+    addChildComponent (oscillatorPage);
     addChildComponent (soundPage);
     addChildComponent (modulationPage);
 
-    // ================= Página "Sonido": oscilador, filtro, Env 1 y voz =================
-    soundPage.addAndMakeVisible (oscillatorGroup);
+    // ================= Página "Osciladores": Osc A, Osc B, sub y ruido =================
+    for (size_t o = 0; o < oscillators.size(); ++o)
+    {
+        auto& osc = oscillators[o];
+        const auto& ids = id::oscillators[o];
+        osc.group.setText (o == 0 ? "Oscilador A" : "Oscilador B");
+        oscillatorPage.addAndMakeVisible (osc.group);
+
+        oscillatorPage.addAndMakeVisible (osc.onButton);
+        osc.onAttachment = std::make_unique<ButtonAttachment> (apvts, ids.on, osc.onButton);
+        setUpComboBox (osc.tableBox, oscillatorPage, ids.wavetable, osc.tableAttachment);
+        oscillatorPage.addAndMakeVisible (osc.display);
+        osc.tableParam = apvts.getRawParameterValue (ids.wavetable);
+        osc.positionParam = apvts.getRawParameterValue (ids.position);
+
+        const std::array<KnobInfo, numOscillatorKnobs> oscillatorInfos { {
+            { ids.position, "Position" },
+            { ids.octave, "Octave" },
+            { ids.semitones, "Semi" },
+            { ids.fine, "Fine" },
+            { ids.level, "Level" },
+            { ids.pan, "Pan" },
+            { ids.unison, "Unison" },
+            { ids.detune, "Detune" },
+            { ids.width, "Width" },
+        } };
+        for (size_t k = 0; k < osc.knobs.size(); ++k)
+            setUpKnob (osc.knobs[k], oscillatorPage, oscillatorInfos[k].parameterId, oscillatorInfos[k].name,
+                       oscillatorKnobWidth);
+    }
+
+    oscillatorPage.addAndMakeVisible (subGroup);
+    oscillatorPage.addAndMakeVisible (subOnButton);
+    subOnAttachment = std::make_unique<ButtonAttachment> (apvts, id::subOn, subOnButton);
+    setUpComboBox (subShapeBox, oscillatorPage, id::subShape, subShapeAttachment);
+    setUpKnob (subKnobs[0], oscillatorPage, id::subOctave, "Octave", oscillatorKnobWidth);
+    setUpKnob (subKnobs[1], oscillatorPage, id::subLevel, "Level", oscillatorKnobWidth);
+
+    oscillatorPage.addAndMakeVisible (noiseGroup);
+    oscillatorPage.addAndMakeVisible (noiseOnButton);
+    noiseOnAttachment = std::make_unique<ButtonAttachment> (apvts, id::noiseOn, noiseOnButton);
+    setUpKnob (noiseKnobs[0], oscillatorPage, id::noiseLevel, "Level", oscillatorKnobWidth);
+    setUpKnob (noiseKnobs[1], oscillatorPage, id::noiseColor, "Color", oscillatorKnobWidth);
+
+    // ================= Página "Filtro y Amp": filtro, Env 1 y voz =================
     soundPage.addAndMakeVisible (filterGroup);
     soundPage.addAndMakeVisible (envelopeGroup);
     soundPage.addAndMakeVisible (voiceGroup);
 
     for (size_t i = 0; i < knobs.size(); ++i)
         setUpKnob (knobs[i], soundPage, infos[i].parameterId, infos[i].name, knobWidth);
-
-    wavetableLabel.setText ("Wavetable", juce::dontSendNotification);
-    wavetableLabel.setJustificationType (juce::Justification::centred);
-    soundPage.addAndMakeVisible (wavetableLabel);
-    setUpComboBox (wavetableBox, soundPage, id::oscAWavetable, wavetableAttachment);
-    setUpKnob (positionKnob, soundPage, id::oscAPosition, "Position", knobWidth);
-
-    soundPage.addAndMakeVisible (wavetableDisplay);
-    wavetableParam = apvts.getRawParameterValue (id::oscAWavetable);
-    positionParam = apvts.getRawParameterValue (id::oscAPosition);
 
     soundPage.addAndMakeVisible (filterOnButton);
     filterOnAttachment = std::make_unique<ButtonAttachment> (apvts, id::filter1On, filterOnButton);
@@ -159,8 +196,8 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
     // Mismo tamaño que la ventana de la Fase 4: cabe en un portátil con el escalado de Windows al 150 %.
     setSize (pageWidth + 2 * groupPadding, pageHeight + headerHeight + 3 * groupPadding);
 
-    soundTab.setToggleState (true, juce::dontSendNotification);
-    showPage (false);
+    oscillatorTab.setToggleState (true, juce::dontSendNotification);
+    showPage (0);
     timerCallback(); // estado inicial (p. ej. Rate o Division visibles según Sync) sin esperar al primer tick
     startTimerHz (30); // la GUI consulta el estado; el audio nunca espera a la GUI
 }
@@ -170,10 +207,11 @@ UndertowAudioProcessorEditor::~UndertowAudioProcessorEditor()
     stopTimer();
 }
 
-void UndertowAudioProcessorEditor::showPage (bool modulation)
+void UndertowAudioProcessorEditor::showPage (int page)
 {
-    soundPage.setVisible (! modulation);
-    modulationPage.setVisible (modulation);
+    oscillatorPage.setVisible (page == 0);
+    soundPage.setVisible (page == 1);
+    modulationPage.setVisible (page == 2);
 }
 
 void UndertowAudioProcessorEditor::setUpKnob (Knob& knob, juce::Component& page, const char* parameterId,
@@ -220,7 +258,8 @@ void UndertowAudioProcessorEditor::timerCallback()
 
     // Se lee el valor del parámetro (no el de la perilla) para que el visor siga también la automatización.
     const auto& bank = processor.getWavetableBank();
-    wavetableDisplay.setWavetable (&bank.get (static_cast<int> (wavetableParam->load())), positionParam->load());
+    for (auto& osc : oscillators)
+        osc.display.setWavetable (&bank.get (static_cast<int> (osc.tableParam->load())), osc.positionParam->load());
 
     const auto filter = processor.readFilterSettings();
     filterDisplay.setResponse (filter.parameters, filter.enabled, processor.getCurrentSampleRate());
@@ -255,10 +294,12 @@ void UndertowAudioProcessorEditor::resized()
     auto header = area.removeFromTop (headerHeight);
     activeVoicesLabel.setBounds (header.removeFromRight (170));
     header.removeFromRight (groupPadding);
-    modulationTab.setBounds (header.removeFromRight (120).reduced (0, 2));
-    soundTab.setBounds (header.removeFromRight (100).reduced (0, 2));
+    modulationTab.setBounds (header.removeFromRight (110).reduced (0, 2));
+    soundTab.setBounds (header.removeFromRight (110).reduced (0, 2));
+    oscillatorTab.setBounds (header.removeFromRight (110).reduced (0, 2));
     area.removeFromTop (groupPadding);
 
+    oscillatorPage.setBounds (area);
     soundPage.setBounds (area);
     modulationPage.setBounds (area);
 
@@ -266,26 +307,57 @@ void UndertowAudioProcessorEditor::resized()
         return groupArea.reduced (groupPadding, 0).withTrimmedTop (22).withTrimmedBottom (groupPadding);
     };
 
-    // ================= Página "Sonido" =================
+    // ================= Página "Osciladores" =================
+    {
+        auto page = oscillatorPage.getLocalBounds();
+
+        // Filas 1 y 2: Osc A y Osc B. Columna con On, tabla y visor; después sus 9 perillas.
+        for (auto& osc : oscillators)
+        {
+            auto groupArea = page.removeFromTop (rowHeight);
+            page.removeFromTop (groupPadding);
+            osc.group.setBounds (groupArea);
+            auto inner = innerOf (groupArea);
+
+            auto column = inner.removeFromLeft (oscillatorColumnWidth);
+            inner.removeFromLeft (8);
+            osc.onButton.setBounds (column.removeFromTop (24));
+            osc.tableBox.setBounds (column.removeFromTop (26));
+            column.removeFromTop (6);
+            osc.display.setBounds (column);
+
+            for (auto& knob : osc.knobs)
+                layoutKnob (knob, inner.removeFromLeft (oscillatorKnobWidth));
+        }
+
+        // Fila 3: Sub | Ruido.
+        auto row = page.removeFromTop (rowHeight);
+        const int halfWidth = (row.getWidth() - groupPadding) / 2;
+        const auto layoutSmallGroup = [&] (juce::GroupComponent& group, juce::ToggleButton& onButton,
+                                           juce::ComboBox* box, std::array<Knob, 2>& groupKnobs) {
+            auto groupArea = row.removeFromLeft (halfWidth);
+            row.removeFromLeft (groupPadding);
+            group.setBounds (groupArea);
+            auto inner = innerOf (groupArea);
+
+            auto column = inner.removeFromLeft (oscillatorColumnWidth);
+            onButton.setBounds (column.removeFromTop (24));
+            if (box != nullptr)
+                box->setBounds (column.removeFromTop (26));
+
+            inner.removeFromLeft ((inner.getWidth() - 2 * oscillatorKnobWidth) / 2); // perillas centradas
+            for (auto& knob : groupKnobs)
+                layoutKnob (knob, inner.removeFromLeft (oscillatorKnobWidth));
+        };
+        layoutSmallGroup (subGroup, subOnButton, &subShapeBox, subKnobs);
+        layoutSmallGroup (noiseGroup, noiseOnButton, nullptr, noiseKnobs);
+    }
+
+    // ================= Página "Filtro y Amp" =================
     {
         auto page = soundPage.getLocalBounds();
 
-        // Fila 1: oscilador (selector de tabla, perilla Position y visor de la forma de onda).
-        {
-            auto groupArea = page.removeFromTop (rowHeight);
-            oscillatorGroup.setBounds (groupArea);
-            auto inner = innerOf (groupArea);
-
-            auto tableColumn = inner.removeFromLeft (wavetableColumnWidth);
-            wavetableLabel.setBounds (tableColumn.removeFromTop (20));
-            wavetableBox.setBounds (tableColumn.removeFromTop (28).reduced (4, 0));
-
-            layoutKnob (positionKnob, inner.removeFromLeft (knobWidth));
-            wavetableDisplay.setBounds (inner.withTrimmedLeft (groupPadding));
-        }
-        page.removeFromTop (groupPadding);
-
-        // Fila 2: filtro (encendido, tipo y pendiente; perillas; curva de respuesta).
+        // Fila 1: filtro (encendido, tipo y pendiente; perillas; curva de respuesta).
         {
             auto groupArea = page.removeFromTop (rowHeight);
             filterGroup.setBounds (groupArea);
@@ -305,7 +377,7 @@ void UndertowAudioProcessorEditor::resized()
         }
         page.removeFromTop (groupPadding);
 
-        // Fila 3: Env 1 y voz.
+        // Fila 2: Env 1 y voz.
         auto row = page.removeFromTop (rowHeight);
         const auto layoutGroup = [&] (juce::GroupComponent& group, size_t firstKnob, size_t count) {
             auto groupArea = row.removeFromLeft (static_cast<int> (count) * knobWidth + groupPadding * 2);

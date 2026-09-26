@@ -94,7 +94,7 @@ Source/
 - [x] Fase 3 — Oscilador wavetable sin aliasing (mipmaps por octava, interpolación, morphing de posición).
 - [x] Fase 4 — Filtros ZDF/TPT: LP/HP/BP 12 y 24 dB, resonancia, drive, key tracking.
 - [x] Fase 5 — Modulación: 2 envolventes extra, LFOs sincronizados al tempo, matriz de modulación.
-- [ ] Fase 6 — Segundo oscilador, sub, ruido, unison (hasta 16 voces) con detune y ancho estéreo.
+- [x] Fase 6 — Segundo oscilador, sub, ruido, unison (hasta 16 voces) con detune y ancho estéreo.
 - [ ] Fase 7 — FM y warp de osciladores: FM/PM entre osciladores (OSC B → OSC A, ruido → OSC, sub → OSC),
       ring mod, y modos de warp (bend, sync, PWM, mirror, quantize/bitcrush). Todo modulable desde la matriz
       y con control de aliasing (oversampling o técnicas band-limited donde haga falta).
@@ -199,4 +199,40 @@ Fase 5 COMPLETADA (2026-09-25). Probada por el usuario en FL Studio: suena bien.
   el VST3 de `build/` abierto y bloqueado).
 - Pendiente de ideas para más adelante: fade-in/delay del LFO, modular el amount con otra fuente (aux), pitch bend.
 
-Siguiente: Fase 6 (segundo oscilador, sub, ruido, unison), pendiente de que el usuario la inicie.
+Fase 6 COMPLETADA (2026-09-25). Probada por el usuario en FL Studio: funciona bien.
+- `dsp/WavetableOscillator.h` con unison: hasta 16 copias con fase propia que comparten tabla, mipmap y frames
+  (una copia extra = 2–4 interpolaciones). Detune cuadrático (100 % = ±100 cents; 25 % = ±6; 50 % = ±25), copias a
+  distancias iguales en cents (razones en progresión geométrica: 2 exp2 por recálculo). Mipmap elegido para la copia
+  MÁS AGUDA (sin alias). Fases al azar por nota con N > 1 (fase 0 con N = 1). Nivel 1/√N (RMS medido ±0.03 dB de
+  1 a 16 copias). Paneo equal power ×√2 (centro L = R = 1 → el sonido por defecto es idéntico al de la Fase 5);
+  parejas simétricas abiertas alternando lado. Ganancias por copia suavizadas 5 ms (cambiar N/ancho/paneo sin clics);
+  detune suavizado 5 ms. `setPitchModulation` renombrado a `setPitchOffset` (afinación + modulación).
+  Tope de frecuencia 0.45·sr: con Octave +4 y pitch al máximo la fase se salía de la tabla (crash en el test de
+  automatización de pluginval; el bug ya existía en la Fase 5 con nota 127 + 24 st). Test de regresión incluido.
+- `dsp/NoiseGenerator.h`: xorshift32 + filtro de 1 polo TPT. Color 0 → LP 100 Hz, 0.5 → blanco, 1 → HP 10 kHz.
+- `dsp/Filter.h`: `processStereo` (2 juegos de estado, coeficientes compartidos) y `copyLeftStateToRight`.
+- `synth/SourceSettings.h`: ajustes de Osc A/B, sub (usa los 4 frames de *Basic Shapes*, mono) y ruido (mono).
+  `SubShape` y su orden se guardan: solo añadir al final.
+- Voz estéreo: fuentes → filtro → amp. Si ningún oscilador audible es estéreo, la voz y el filtro van en mono
+  (al pasar a estéreo se copia el estado L → R). `SourceLevel`: fundido on/off y nivel 5 ms + modulación.
+  Afinación suavizada 5 ms. `VoiceManager::render (left, right, n)`; `render (out, n)` = mono (L + R) / 2.
+- Destinos nuevos (al final): Osc B Position, Osc B Pitch, Osc A/B Level, Sub Level, Noise Level, Osc A/B Detune,
+  Global Pitch (A, B y sub). Pan y Width no son destinos (recalcular 16 cos/sin por muestra).
+- Parámetros nuevos (versionHint 5; IDs en `Parameters.h`, `params::oscillators[]`): oscXOn, oscBWavetable,
+  oscBPosition, oscXOctave (−4..4), oscXSemi (−12..12), oscXFine (±100 ct), oscXLevel (def. 100 %), oscXPan,
+  oscXUnison (1..16), oscXDetune (def. 25 %), oscXWidth (def. 80 %); subOn, subShape, subOctave (−3..0, def. −1),
+  subLevel (def. 75 %); noiseOn, noiseLevel (def. 50 %), noiseColor (def. 50 %). Osc A on, B/sub/ruido off:
+  un proyecto de la Fase 5 suena igual. Osc A conserva oscAWavetable/oscAPosition (versionHint 2).
+- GUI: 3 pestañas del mismo tamaño que antes (870×602): "Osciladores" (A, B con visor y 9 perillas; Sub | Ruido),
+  "Filtro y Amp" (filtro; Env 1 | Voz) y "Modulación".
+- Tests (11 nuevos): posición exacta de cada copia (error 0.000000 cents), picos del unison en el espectro,
+  volumen constante, L = R = salida mono por defecto, correlación L/R 0.39 con ancho 100 %, potencia constante con
+  el paneo, cambios sin clics (salto máx. 0.009), afinación de Osc B y sub (0.00001 cents), formas del sub (3.º
+  armónico de la cuadrada −9.54 dB), color del ruido (blanco −0.2 dB, oscuro −27.6, brillante +24.2), destinos
+  nuevos, tono extremo seguro, alias con unison (−92.8 dB). CPU (48 kHz): 8 notas sin unison ≈ 5 %; supersaw 8 notas
+  × 7 copias ≈ 9 %; peor caso (16 notas, A y B con 16 copias, sub, ruido, 4 rutas) ≈ 65–80 % de un núcleo.
+- Release con 0 warnings (build limpio); pluginval strictness 10: SUCCESS.
+- Límites conocidos: el unison al máximo es caro (optimizar con SIMD en Fase 11). La suma mono de un unison abierto
+  pierde hasta −3 dB en las copias de los lados (ley de paneo equal power; explicado en APRENDIZAJE.md).
+
+Siguiente: Fase 7 (FM y warp), pendiente de que el usuario la inicie.

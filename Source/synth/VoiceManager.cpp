@@ -13,6 +13,7 @@ void VoiceManager::prepare (double newSampleRate) noexcept
     {
         voice.prepare (sampleRate);
         voice.setModulationEnvelopes (modulation.envelope2, modulation.envelope3);
+        voice.setSourceSettings (sources);
     }
 
     sustainPedalDown = false;
@@ -38,17 +39,30 @@ void VoiceManager::setVelocitySensitivity (float amount) noexcept
     velocitySensitivity = std::clamp (amount, 0.0f, 1.0f);
 }
 
+void VoiceManager::setSourceSettings (const SourceSettings& settings) noexcept
+{
+    // Se llama una vez por bloque: si nada cambió no se toca ninguna voz. Cada voz suaviza por su cuenta
+    // (posición, niveles, afinación, unison) y le suma su propia modulación.
+    if (settings == sources)
+        return;
+
+    sources = settings;
+    for (auto& voice : voices)
+        voice.setSourceSettings (sources);
+}
+
 void VoiceManager::setWavetable (const dsp::Wavetable* table) noexcept
 {
-    for (auto& voice : voices)
-        voice.setWavetable (table);
+    auto settings = sources;
+    settings.oscillators[0].table = table;
+    setSourceSettings (settings);
 }
 
 void VoiceManager::setWavetablePosition (float position) noexcept
 {
-    // Cada voz suaviza la posición por su cuenta (y le suma su propia modulación).
-    for (auto& voice : voices)
-        voice.setWavetablePosition (position);
+    auto settings = sources;
+    settings.oscillators[0].position = position;
+    setSourceSettings (settings);
 }
 
 void VoiceManager::setFilterSettings (const FilterSettings& settings) noexcept
@@ -189,7 +203,7 @@ void VoiceManager::killAll() noexcept
         voice.steal();
 }
 
-void VoiceManager::render (float* output, int numSamples) noexcept
+void VoiceManager::render (float* left, float* right, int numSamples) noexcept
 {
     if (numSamples <= 0)
         return;
@@ -205,7 +219,7 @@ void VoiceManager::render (float* output, int numSamples) noexcept
 
     for (auto& voice : voices)
         if (voice.isActive())
-            voice.render (output, numSamples, context);
+            voice.render (left, right, numSamples, context);
 
     // El reloj común avanza aunque no suene ninguna nota: una nota nueva en modo Free entra "en fase".
     for (size_t l = 0; l < freeClocks.size(); ++l)

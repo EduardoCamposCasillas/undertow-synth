@@ -73,10 +73,43 @@ inline constexpr std::array<ModSlotIds, 8> modSlots { {
     { "mod8Source", "mod8Destination", "mod8Amount" },
 } };
 
+// Fase 6: osciladores A y B, sub y ruido. Osc A conserva los IDs de la Fase 3 para Wavetable y Position.
+struct OscillatorIds
+{
+    const char* on;
+    const char* wavetable;
+    const char* position;
+    const char* octave;
+    const char* semitones;
+    const char* fine;
+    const char* level;
+    const char* pan;
+    const char* unison;
+    const char* detune;
+    const char* width;
+};
+
+inline constexpr std::array<OscillatorIds, 2> oscillators { {
+    { "oscAOn", oscAWavetable, oscAPosition, "oscAOctave", "oscASemi", "oscAFine", "oscALevel", "oscAPan", "oscAUnison",
+      "oscADetune", "oscAWidth" },
+    { "oscBOn", "oscBWavetable", "oscBPosition", "oscBOctave", "oscBSemi", "oscBFine", "oscBLevel", "oscBPan", "oscBUnison",
+      "oscBDetune", "oscBWidth" },
+} };
+
+inline constexpr const char* subOn = "subOn";
+inline constexpr const char* subShape = "subShape";
+inline constexpr const char* subOctave = "subOctave";
+inline constexpr const char* subLevel = "subLevel";
+
+inline constexpr const char* noiseOn = "noiseOn";
+inline constexpr const char* noiseLevel = "noiseLevel";
+inline constexpr const char* noiseColor = "noiseColor";
+
 // Versión con la que se introdujeron los parámetros (la usa VST3 para compatibilidad hacia atrás).
 inline constexpr int versionHint = 1;
 // Los parámetros añadidos en una versión posterior llevan un número mayor.
 inline constexpr int versionHintOscillator = 2;
 inline constexpr int versionHintFilter = 3;
 inline constexpr int versionHintModulation = 4;
+inline constexpr int versionHintSources = 5;
 } // namespace undertow::params

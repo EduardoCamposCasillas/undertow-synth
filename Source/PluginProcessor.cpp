@@ -73,6 +73,30 @@ juce::NormalisableRange<float> logRange (float minValue, float maxValue)
              [] (float start, float end, float value) { return juce::jlimit (start, end, value); } };
 }
 
+// Paneo como "L 30", "C" o "R 100" (porcentaje hacia cada lado).
+juce::String panToText (float pan, int /*maxLength*/)
+{
+    const int percent = juce::roundToInt (pan * 100.0f);
+    if (percent == 0)
+        return "C";
+    return (percent < 0 ? "L " : "R ") + juce::String (std::abs (percent));
+}
+
+// Acepta "L 30", "R 100", "C" o un número de -100 a 100.
+float textToPan (const juce::String& text)
+{
+    const auto trimmed = text.trim().toUpperCase();
+    if (trimmed.startsWith ("C"))
+        return 0.0f;
+    const float value = trimmed.trimCharactersAtStart ("LR ").getFloatValue() / 100.0f;
+    return trimmed.startsWith ("L") ? -value : value;
+}
+
+juce::String signedText (int value, const juce::String& unit)
+{
+    return (value > 0 ? "+" : "") + juce::String (value) + unit;
+}
+
 template <size_t N>
 juce::StringArray toStringArray (const std::array<const char*, N>& names)
 {
@@ -101,8 +125,21 @@ UndertowAudioProcessor::UndertowAudioProcessor()
     voicesParam = parameters.getRawParameterValue (id::voices);
     velocityParam = parameters.getRawParameterValue (id::velocity);
     masterParam = parameters.getRawParameterValue (id::master);
-    oscAWavetableParam = parameters.getRawParameterValue (id::oscAWavetable);
-    oscAPositionParam = parameters.getRawParameterValue (id::oscAPosition);
+    for (size_t o = 0; o < oscillatorParams.size(); ++o)
+    {
+        const auto& ids = id::oscillators[o];
+        const auto get = [this] (const char* parameterId) { return parameters.getRawParameterValue (parameterId); };
+        oscillatorParams[o] = { get (ids.on),     get (ids.wavetable), get (ids.position), get (ids.octave),
+                                get (ids.semitones), get (ids.fine),   get (ids.level),    get (ids.pan),
+                                get (ids.unison), get (ids.detune),    get (ids.width) };
+    }
+    subOnParam = parameters.getRawParameterValue (id::subOn);
+    subShapeParam = parameters.getRawParameterValue (id::subShape);
+    subOctaveParam = parameters.getRawParameterValue (id::subOctave);
+    subLevelParam = parameters.getRawParameterValue (id::subLevel);
+    noiseOnParam = parameters.getRawParameterValue (id::noiseOn);
+    noiseLevelParam = parameters.getRawParameterValue (id::noiseLevel);
+    noiseColorParam = parameters.getRawParameterValue (id::noiseColor);
     filterOnParam = parameters.getRawParameterValue (id::filter1On);
     filterTypeParam = parameters.getRawParameterValue (id::filter1Type);
     filterSlopeParam = parameters.getRawParameterValue (id::filter1Slope);
@@ -266,6 +303,76 @@ juce::AudioProcessorValueTreeState::ParameterLayout UndertowAudioProcessor::crea
                                                                  percentAttributes()));
     }
 
+    // --- Fase 6: osciladores A y B, sub y ruido. Por defecto solo suena Osc A sin unison: el sonido de la Fase 5. ---
+    constexpr int v6 = id::versionHintSources;
+    const synth::SourceSettings sourceDefaults;
+
+    for (size_t o = 0; o < id::oscillators.size(); ++o)
+    {
+        const auto& ids = id::oscillators[o];
+        const auto& d = sourceDefaults.oscillators[o];
+        const juce::String name = juce::String ("Osc ") + (o == 0 ? "A " : "B ");
+
+        // Osc A ya tiene Wavetable y Position desde la Fase 3 (creados arriba con su versionHint).
+        if (o > 0)
+        {
+            layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids.wavetable, v6 },
+                                                                      name + "Wavetable", tableNames, 0));
+            layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ids.position, v6 }, name + "Position",
+                                                                     juce::NormalisableRange<float> (0.0f, 1.0f), d.position,
+                                                                     percentAttributes()));
+        }
+
+        layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { ids.on, v6 }, name + "On", d.enabled));
+        layout.add (std::make_unique<juce::AudioParameterInt> (
+            juce::ParameterID { ids.octave, v6 }, name + "Octave", -4, 4, d.octave,
+            juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return signedText (v, " oct"); })));
+        layout.add (std::make_unique<juce::AudioParameterInt> (
+            juce::ParameterID { ids.semitones, v6 }, name + "Semi", -12, 12, d.semitones,
+            juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return signedText (v, " st"); })));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ids.fine, v6 }, name + "Fine", juce::NormalisableRange<float> (-100.0f, 100.0f), d.fineCents,
+            juce::AudioParameterFloatAttributes()
+                .withLabel ("ct")
+                .withStringFromValueFunction ([] (float v, int) { return signedText (juce::roundToInt (v), " ct"); })));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ids.level, v6 }, name + "Level",
+                                                                 juce::NormalisableRange<float> (0.0f, 1.0f), d.level,
+                                                                 percentAttributes()));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ids.pan, v6 }, name + "Pan", juce::NormalisableRange<float> (-1.0f, 1.0f), d.pan,
+            juce::AudioParameterFloatAttributes().withStringFromValueFunction (panToText).withValueFromStringFunction (textToPan)));
+        layout.add (std::make_unique<juce::AudioParameterInt> (juce::ParameterID { ids.unison, v6 }, name + "Unison", 1,
+                                                               undertow::dsp::WavetableOscillator::maxUnison, d.unison));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ids.detune, v6 }, name + "Detune",
+                                                                 juce::NormalisableRange<float> (0.0f, 1.0f), d.detune,
+                                                                 percentAttributes()));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ids.width, v6 }, name + "Width",
+                                                                 juce::NormalisableRange<float> (0.0f, 1.0f), d.width,
+                                                                 percentAttributes()));
+    }
+
+    // Sub: el orden de las formas se guarda (índice): no cambiarlo.
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id::subOn, v6 }, "Sub On",
+                                                            sourceDefaults.sub.enabled));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id::subShape, v6 }, "Sub Shape",
+                                                              toStringArray (synth::subShapeNames),
+                                                              static_cast<int> (sourceDefaults.sub.shape)));
+    layout.add (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { id::subOctave, v6 }, "Sub Octave", -3, 0, sourceDefaults.sub.octave,
+        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return signedText (v, " oct"); })));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id::subLevel, v6 }, "Sub Level",
+                                                             juce::NormalisableRange<float> (0.0f, 1.0f),
+                                                             sourceDefaults.sub.level, percentAttributes()));
+
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id::noiseOn, v6 }, "Noise On",
+                                                            sourceDefaults.noise.enabled));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id::noiseLevel, v6 }, "Noise Level",
+                                                             juce::NormalisableRange<float> (0.0f, 1.0f),
+                                                             sourceDefaults.noise.level, percentAttributes()));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id::noiseColor, v6 }, "Noise Color",
+                                                             juce::NormalisableRange<float> (0.0f, 1.0f),
+                                                             sourceDefaults.noise.color, percentAttributes()));
+
     return layout;
 }
 
@@ -296,13 +403,45 @@ void UndertowAudioProcessor::updateVoiceParameters() noexcept
     voiceManager.setPolyphony (static_cast<int> (voicesParam->load()));
     voiceManager.setVelocitySensitivity (velocityParam->load());
 
-    // Cambiar de tabla es solo cambiar un puntero a datos que ya existen: nada se reserva aquí.
-    voiceManager.setWavetable (&wavetableBank->get (static_cast<int> (oscAWavetableParam->load())));
-    voiceManager.setWavetablePosition (oscAPositionParam->load());
+    voiceManager.setSourceSettings (readSourceSettings());
 
     // Cada voz suaviza el filtro por muestra, así que aquí basta con pasar los valores una vez por bloque.
     voiceManager.setFilterSettings (readFilterSettings());
     voiceManager.setModulationSettings (readModulationSettings());
+}
+
+undertow::synth::SourceSettings UndertowAudioProcessor::readSourceSettings() const noexcept
+{
+    namespace synth = undertow::synth;
+    synth::SourceSettings settings;
+
+    // Cambiar de tabla es solo cambiar un puntero a datos que ya existen: nada se reserva aquí.
+    const auto tableAt = [this] (const std::atomic<float>* parameter) {
+        return &wavetableBank->get (static_cast<int> (parameter->load()));
+    };
+
+    for (size_t o = 0; o < oscillatorParams.size(); ++o)
+    {
+        const auto& p = oscillatorParams[o];
+        auto& osc = settings.oscillators[o];
+        osc.enabled = p.on->load() >= 0.5f;
+        osc.table = tableAt (p.wavetable);
+        osc.position = p.position->load();
+        osc.octave = static_cast<int> (p.octave->load());
+        osc.semitones = static_cast<int> (p.semitones->load());
+        osc.fineCents = p.fine->load();
+        osc.level = p.level->load();
+        osc.pan = p.pan->load();
+        osc.unison = static_cast<int> (p.unison->load());
+        osc.detune = p.detune->load();
+        osc.width = p.width->load();
+    }
+
+    settings.sub = { subOnParam->load() >= 0.5f, choiceToEnum<synth::SubShape> (subShapeParam),
+                     static_cast<int> (subOctaveParam->load()), subLevelParam->load() };
+    settings.noise = { noiseOnParam->load() >= 0.5f, noiseLevelParam->load(), noiseColorParam->load() };
+    settings.subTable = &wavetableBank->get (0); // Basic Shapes: seno, triángulo, sierra, cuadrada
+    return settings;
 }
 
 undertow::synth::ModulationSettings UndertowAudioProcessor::readModulationSettings() const noexcept
@@ -386,8 +525,12 @@ void UndertowAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     updateVoiceParameters();
     updateTransport();
 
-    // Todas las voces se suman en el canal 0 (en esta fase el sinte es mono) y luego se copia al resto.
-    float* mono = buffer.getWritePointer (0);
+    // Las voces se suman directamente en los canales de salida. Con salida mono, cada voz suma (L + R) / 2.
+    float* left = buffer.getWritePointer (0);
+    float* right = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
+    const auto render = [&] (int start, int count) {
+        voiceManager.render (left + start, right != nullptr ? right + start : nullptr, count);
+    };
 
     // Renderizado "sample-accurate": se genera audio hasta la posición de cada evento MIDI,
     // se aplica el evento y se sigue. El timing no depende del tamaño de buffer.
@@ -396,7 +539,7 @@ void UndertowAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     for (const auto metadata : midiMessages)
     {
         const int eventPosition = juce::jlimit (0, numSamples, metadata.samplePosition);
-        voiceManager.render (mono + position, eventPosition - position);
+        render (position, eventPosition - position);
         position = eventPosition;
 
         // Solo mensajes cortos (notas, CC): un SysEx largo haría que MidiMessage reserve memoria.
@@ -404,13 +547,18 @@ void UndertowAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
             handleMidiMessage (metadata.getMessage());
     }
 
-    voiceManager.render (mono + position, numSamples - position);
+    render (position, numSamples - position);
 
+    // Un solo SmoothedValue para los dos canales: se avanza una vez por muestra y se aplica a ambos
+    // (applyGain canal por canal avanzaría el suavizado dos veces).
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterParam->load(), minusInfinityDb));
-    masterGain.applyGain (mono, numSamples);
-
-    for (int channel = 1; channel < numChannels; ++channel)
-        buffer.copyFrom (channel, 0, buffer, 0, 0, numSamples);
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const float gain = masterGain.getNextValue();
+        left[i] *= gain;
+        if (right != nullptr)
+            right[i] *= gain;
+    }
 
     activeVoiceCount.store (voiceManager.getNumActiveVoices(), std::memory_order_relaxed);
     for (size_t l = 0; l < lfoDisplayPhases.size(); ++l)

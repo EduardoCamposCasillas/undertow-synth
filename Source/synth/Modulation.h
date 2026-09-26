@@ -37,9 +37,14 @@ inline constexpr std::array<const char*, 10> modSourceNames {
     "Aftertouch",  // presión del canal, 0..1
 };
 
-enum class ModDestination { none, oscAPosition, oscAPitch, filterCutoff, filterResonance, filterDrive, volume };
+enum class ModDestination
+{
+    none, oscAPosition, oscAPitch, filterCutoff, filterResonance, filterDrive, volume,
+    // Fase 6
+    oscBPosition, oscBPitch, oscALevel, oscBLevel, subLevel, noiseLevel, oscADetune, oscBDetune, globalPitch
+};
 
-inline constexpr std::array<const char*, 7> modDestinationNames {
+inline constexpr std::array<const char*, 16> modDestinationNames {
     "None",
     "Osc A Position",
     "Osc A Pitch",
@@ -47,6 +52,15 @@ inline constexpr std::array<const char*, 7> modDestinationNames {
     "Filter Resonance",
     "Filter Drive",
     "Volume",
+    "Osc B Position",
+    "Osc B Pitch",
+    "Osc A Level",
+    "Osc B Level",
+    "Sub Level",
+    "Noise Level",
+    "Osc A Detune",
+    "Osc B Detune",
+    "Global Pitch", // mueve a la vez Osc A, Osc B y Sub (la escala de los Pitch: 100 % = ±24 semitonos)
 };
 
 inline constexpr int numModSources = static_cast<int> (modSourceNames.size());
@@ -55,7 +69,7 @@ inline constexpr int numModSlots = 8;
 inline constexpr int numLfos = 2;
 
 // Escalas de los destinos que no tienen una perilla de 0..1.
-// Pitch: no hay perilla de afinación todavía (llega en la Fase 6); 100 % = ±24 semitonos (2 octavas).
+// Pitch: 100 % = ±24 semitonos (2 octavas), se suma a la afinación (Octave/Semi/Fine) del oscilador.
 inline constexpr float pitchModulationSemitones = 24.0f;
 // Cutoff: la perilla recorre 20 Hz – 20 kHz ≈ 10 octavas. 100 % = 10 octavas exactas: cada 10 % = 1 octava.
 inline constexpr float cutoffModulationOctaves = 10.0f;

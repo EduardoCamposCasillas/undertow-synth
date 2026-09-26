@@ -26,7 +26,12 @@ public:
     void setEnvelopeParameters (const dsp::AdsrParameters& parameters) noexcept;
     void setPolyphony (int numVoices) noexcept;
     void setVelocitySensitivity (float amount) noexcept; // 0 = ignora la velocity, 1 = sensibilidad total
-    void setWavetable (const dsp::Wavetable* table) noexcept; // sin tabla, las voces no suenan
+    // Fase 6: osciladores A y B, sub y ruido. Se llama una vez por bloque.
+    void setSourceSettings (const SourceSettings& settings) noexcept;
+    [[nodiscard]] const SourceSettings& getSourceSettings() const noexcept { return sources; }
+
+    // Atajos para el oscilador A (los usan los tests).
+    void setWavetable (const dsp::Wavetable* table) noexcept; // sin tabla, el oscilador no suena
     void setWavetablePosition (float position) noexcept;      // 0..1, recorre los frames de la tabla
     void setFilterSettings (const FilterSettings& settings) noexcept;
 
@@ -43,7 +48,9 @@ public:
     void releaseAll() noexcept; // CC 123 (All Notes Off): release normal
     void killAll() noexcept;    // CC 120 (All Sound Off): fade rápido
 
-    void render (float* output, int numSamples) noexcept;
+    // Suma todas las voces en 'left' y 'right'. Con 'right' nulo la salida es mono: (L + R) / 2 en 'left'.
+    void render (float* left, float* right, int numSamples) noexcept;
+    void render (float* output, int numSamples) noexcept { render (output, nullptr, numSamples); }
 
     [[nodiscard]] int getNumActiveVoices() const noexcept;
     [[nodiscard]] const Voice& getVoice (int index) const noexcept { return voices[static_cast<size_t> (index)]; }
@@ -61,6 +68,7 @@ private:
     void updateLfoIncrements() noexcept;
 
     std::array<Voice, voicePoolSize> voices;
+    SourceSettings sources;
     FilterSettings filterSettings;
     ModulationSettings modulation;
     Transport transport;

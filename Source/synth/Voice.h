@@ -8,9 +8,11 @@
 #include "dsp/AdsrEnvelope.h"
 #include "dsp/Filter.h"
 #include "dsp/Lfo.h"
+#include "dsp/NoiseGenerator.h"
 #include "dsp/Pitch.h"
 #include "dsp/WavetableOscillator.h"
 #include "synth/Modulation.h"
+#include "synth/SourceSettings.h"
 
 namespace undertow::synth
 {
@@ -37,14 +39,51 @@ struct ModulationContext
     float aftertouch = 0.0f;
 };
 
-// Una voz = oscilador wavetable → filtro → amplificador (envolvente), más sus fuentes de modulación
-// propias (Env 2, Env 3, LFOs). El VoiceManager decide qué nota toca cada una.
+// Nivel de una fuente de sonido (oscilador, sub o ruido): perilla suavizada + modulación, y un fundido de
+// 5 ms al encenderla o apagarla (encender un oscilador con la nota sonando no hace clic).
+struct SourceLevel
+{
+    float onMix = 0.0f;
+    float level = 0.0f;
+
+    void snap (bool on, float knob) noexcept
+    {
+        onMix = on ? 1.0f : 0.0f;
+        level = knob;
+    }
+
+    // Apagada y con el fundido terminado: no se procesa (no gasta CPU).
+    [[nodiscard]] bool isSilent (bool on) const noexcept { return ! on && onMix == 0.0f; }
+
+    [[nodiscard]] float next (bool on, float knob, float modulation, float coef) noexcept
+    {
+        glide (onMix, on ? 1.0f : 0.0f, coef);
+        glide (level, knob, coef);
+        return onMix * std::clamp (level + modulation, 0.0f, 1.0f);
+    }
+
+    static void glide (float& value, float goal, float coef) noexcept
+    {
+        if (value == goal)
+            return;
+        value += (goal - value) * coef;
+        if (std::abs (goal - value) < 1.0e-6f)
+            value = goal;
+    }
+};
+
+// Una voz = fuentes (Osc A, Osc B, sub, ruido) → filtro → amplificador (envolvente), más sus fuentes de
+// modulación propias (Env 2, Env 3, LFOs). El VoiceManager decide qué nota toca cada una.
+// Desde la Fase 6 la voz es estéreo: el unison y el paneo reparten las copias entre los dos canales.
 class Voice
 {
 public:
     void prepare (double sampleRate) noexcept
     {
-        oscillator.setSampleRate (sampleRate);
+        for (auto& oscillator : oscillators)
+            oscillator.setSampleRate (sampleRate);
+        subOscillator.setSampleRate (sampleRate);
+        noise.setSampleRate (sampleRate);
         envelope.setSampleRate (sampleRate);
         envelope.reset();
         envelope2.setSampleRate (sampleRate);
@@ -55,6 +94,7 @@ public:
         filterMixCoef = smoothingCoefficient (gainSmoothingSeconds, sampleRate);
         filterMix = filterSettings.enabled ? 1.0f : 0.0f;
         gainSmoothingCoef = smoothingCoefficient (gainSmoothingSeconds, sampleRate);
+        smoothingCoef = gainSmoothingCoef;
         amountSmoothingCoef = smoothingCoefficient (amountSmoothingSeconds, sampleRate);
         controllerSmoothingCoef = smoothingCoefficient (controllerSmoothingSeconds, sampleRate);
         lfoSmoothingCoef = smoothingCoefficient (lfoSmoothingSeconds, sampleRate);
@@ -71,8 +111,23 @@ public:
         envelope3.setParameters (env3);
     }
 
-    void setWavetable (const dsp::Wavetable* table) noexcept { oscillator.setWavetable (table); }
-    void setWavetablePosition (float position) noexcept { oscillator.setPosition (position); }
+    void setSourceSettings (const SourceSettings& settings) noexcept
+    {
+        sourceSettings = settings;
+        for (size_t o = 0; o < oscillators.size(); ++o)
+        {
+            const auto& osc = settings.oscillators[o];
+            oscillators[o].setWavetable (osc.table);
+            oscillators[o].setPosition (osc.position);
+            oscillators[o].setUnison (osc.unison, osc.detune, osc.width, osc.pan);
+        }
+
+        // Cada forma del sub es un frame de "Basic Shapes" (0, 1/3, 2/3, 1). Cambiar de forma recorre los
+        // frames intermedios en 10 ms (el suavizado de Position): un morph corto en vez de un salto.
+        subOscillator.setWavetable (settings.subTable);
+        subOscillator.setPosition (static_cast<float> (settings.sub.shape) / 3.0f);
+        noise.setColor (settings.noise.color);
+    }
 
     void setFilterSettings (const FilterSettings& settings) noexcept
     {
@@ -86,8 +141,9 @@ public:
             filter.reset();
     }
 
-    // 'lfoSeed' hace que el Sample & Hold de cada nota (en modo Retrigger) siga su propia secuencia.
-    void start (int midiNote, float velocity, float gain, std::uint64_t order, std::uint32_t lfoSeed) noexcept
+    // 'seed' hace que el Sample & Hold de cada nota (en modo Retrigger), las fases del unison y el ruido
+    // sigan su propia secuencia.
+    void start (int midiNote, float velocity, float gain, std::uint64_t order, std::uint32_t seed) noexcept
     {
         targetGain = gain;
         noteNumber = midiNote;
@@ -95,15 +151,34 @@ public:
         noteOrder = order;
         keyHeld = true;
         sustainedByPedal = false;
-        oscillator.setFrequency (dsp::midiNoteToHz (midiNote));
+        const double hz = dsp::midiNoteToHz (midiNote);
+        for (auto& oscillator : oscillators)
+            oscillator.setFrequency (hz);
+        subOscillator.setFrequency (hz);
         updateFilterCutoff();
 
         if (! envelope.isActive())
         {
-            // Voz en silencio: empezar en fase 0 hace que cada nota arranque igual, y el filtro
-            // empieza vacío y con el cutoff de ESTA nota (sin barrer desde el de la nota anterior).
-            oscillator.reset();
+            // Voz en silencio: cada nota arranca igual (fase 0 sin unison; fases al azar con unison), y el
+            // filtro empieza vacío y con el cutoff de ESTA nota (sin barrer desde el de la nota anterior).
+            // Niveles y afinación saltan directo a sus valores: no hay nada sonando que pueda hacer clic.
+            for (size_t o = 0; o < oscillators.size(); ++o)
+            {
+                const auto& osc = sourceSettings.oscillators[o];
+                oscillators[o].reset (seed ^ (0xA5A5A5A5u + static_cast<std::uint32_t> (o)));
+                oscillatorLevels[o].snap (osc.enabled, osc.level);
+                tuning[o] = osc.tuningSemitones();
+                oscillators[o].setPitchOffset (tuning[o]);
+            }
+            subOscillator.reset();
+            subLevel.snap (sourceSettings.sub.enabled, sourceSettings.sub.level);
+            subTuning = 12.0f * static_cast<float> (sourceSettings.sub.octave);
+            subOscillator.setPitchOffset (subTuning);
+            noise.reset (seed);
+            noiseLevel.snap (sourceSettings.noise.enabled, sourceSettings.noise.level);
+
             filter.reset();
+            filterStereo = false;
             filterMix = filterSettings.enabled ? 1.0f : 0.0f;
             currentGain = gain;
 
@@ -118,7 +193,7 @@ public:
 
         // Retrigger / One Shot: cada nota reinicia el LFO. (En modo Free, render lo vuelve a alinear con el reloj común.)
         for (size_t l = 0; l < lfos.size(); ++l)
-            lfos[l].reset (lfoSeed + static_cast<std::uint32_t> (l));
+            lfos[l].reset (seed + static_cast<std::uint32_t> (l));
 
         envelope.noteOn();
         envelope2.noteOn();
@@ -157,8 +232,9 @@ public:
         envelope3.reset();
     }
 
-    // Suma (no sobrescribe) la salida de la voz en 'output': así se mezclan todas las voces.
-    void render (float* output, int numSamples, const ModulationContext& context) noexcept
+    // Suma (no sobrescribe) la salida de la voz en 'left' y 'right': así se mezclan todas las voces.
+    // Con 'right' nulo (salida mono) se suma (L + R) / 2 en 'left'.
+    void render (float* left, float* right, int numSamples, const ModulationContext& context) noexcept
     {
         std::array<float, numModSources> sources {};
         sources[index (ModSource::key)] = static_cast<float> (noteNumber - 60) / keySemitonesPerUnit;
@@ -178,6 +254,15 @@ public:
             if (lfoSettings.mode == LfoMode::free)
                 lfos[l].syncTo (context.freeClocks[l], freeRunningSeed + static_cast<std::uint32_t> (l));
         }
+
+        // ¿Hace falta estéreo? Solo si algún oscilador que suena tiene unison abierto o paneo. Si no, la voz
+        // (y sobre todo el filtro) se procesa en mono: un bajo sin unison cuesta lo mismo que en la Fase 5.
+        bool stereo = false;
+        for (size_t o = 0; o < oscillators.size(); ++o)
+            stereo = stereo || (! oscillatorLevels[o].isSilent (sourceSettings.oscillators[o].enabled) && oscillators[o].isStereo());
+        if (stereo && ! filterStereo)
+            filter.copyLeftStateToRight();
+        filterStereo = stereo;
 
         for (int i = 0; i < numSamples && envelope.isActive(); ++i)
         {
@@ -227,9 +312,7 @@ public:
                 computeModulation (sources, context.settings.slots);
                 const auto modulationOf = [this] (ModDestination d) { return destinationValues[index (d)]; };
 
-                // --- Destinos ---
-                oscillator.setPositionModulation (modulationOf (ModDestination::oscAPosition));
-                oscillator.setPitchModulation (modulationOf (ModDestination::oscAPitch) * pitchModulationSemitones);
+                // --- Destinos (los de las fuentes de sonido se aplican en renderSources) ---
                 filter.setModulation (modulationOf (ModDestination::filterCutoff) * cutoffModulationOctaves,
                                       modulationOf (ModDestination::filterResonance),
                                       modulationOf (ModDestination::filterDrive));
@@ -238,7 +321,9 @@ public:
             }
             snapModulation = false; // solo la primera muestra de una nota salta directo a sus valores
 
-            float sample = oscillator.processSample();
+            // --- Fuentes de sonido ---
+            float sampleLeft = 0.0f, sampleRight = 0.0f;
+            renderSources (sampleLeft, sampleRight, stereo);
 
             // Encender/apagar el filtro es un fundido de 5 ms entre la señal limpia y la filtrada.
             // Apagado del todo no se procesa: con el filtro en off el sonido es el de la Fase 3, sin gasto de CPU.
@@ -247,9 +332,32 @@ public:
             if (std::abs (mixTarget - filterMix) < 1.0e-5f)
                 filterMix = mixTarget;
             if (filterMix > 0.0f)
-                sample += filterMix * (filter.processSample (sample) - sample);
+            {
+                if (stereo)
+                {
+                    float filteredLeft = sampleLeft, filteredRight = sampleRight;
+                    filter.processStereo (filteredLeft, filteredRight);
+                    sampleLeft += filterMix * (filteredLeft - sampleLeft);
+                    sampleRight += filterMix * (filteredRight - sampleRight);
+                }
+                else
+                {
+                    sampleLeft += filterMix * (filter.processSample (sampleLeft) - sampleLeft);
+                }
+            }
+            if (! stereo)
+                sampleRight = sampleLeft;
 
-            output[i] += sample * amplitude * currentGain * volume;
+            const float gain = amplitude * currentGain * volume;
+            if (right != nullptr)
+            {
+                left[i] += sampleLeft * gain;
+                right[i] += sampleRight * gain;
+            }
+            else
+            {
+                left[i] += 0.5f * (sampleLeft + sampleRight) * gain;
+            }
         }
     }
 
@@ -265,7 +373,15 @@ public:
     [[nodiscard]] dsp::AdsrEnvelope::Stage getEnvelopeStage() const noexcept { return envelope.getStage(); }
     [[nodiscard]] double getLfoPhase (int lfo) const noexcept { return lfos[static_cast<size_t> (lfo)].getPhase(); }
     [[nodiscard]] float getModulation (ModDestination d) const noexcept { return destinationValues[index (d)]; }
-    [[nodiscard]] double getOscillatorFrequency() const noexcept { return oscillator.getFrequency(); }
+    [[nodiscard]] double getOscillatorFrequency (int osc = 0) const noexcept
+    {
+        return oscillators[static_cast<size_t> (osc)].getFrequency();
+    }
+    [[nodiscard]] const dsp::WavetableOscillator& getOscillator (int osc) const noexcept
+    {
+        return oscillators[static_cast<size_t> (osc)];
+    }
+    [[nodiscard]] double getSubFrequency() const noexcept { return subOscillator.getFrequency(); }
     [[nodiscard]] float getFilterCutoffHz() const noexcept { return filter.getEffectiveCutoffHz(); }
 
     // Semilla común del S&H en modo Free: todas las voces sacan los mismos valores al azar.
@@ -323,6 +439,74 @@ private:
         destinationValues = sums;
     }
 
+    // Suma de las 4 fuentes, cada una con su nivel. Sub y ruido son mono (van igual a los dos canales).
+    void renderSources (float& left, float& right, bool stereo) noexcept
+    {
+        const auto modulationOf = [this] (ModDestination d) { return destinationValues[index (d)]; };
+        const float globalPitch = modulationOf (ModDestination::globalPitch) * pitchModulationSemitones;
+
+        struct OscillatorDestinations
+        {
+            ModDestination position, pitch, level, detune;
+        };
+        constexpr std::array<OscillatorDestinations, numOscillators> destinations { {
+            { ModDestination::oscAPosition, ModDestination::oscAPitch, ModDestination::oscALevel, ModDestination::oscADetune },
+            { ModDestination::oscBPosition, ModDestination::oscBPitch, ModDestination::oscBLevel, ModDestination::oscBDetune },
+        } };
+
+        for (size_t o = 0; o < oscillators.size(); ++o)
+        {
+            const auto& settings = sourceSettings.oscillators[o];
+            auto& oscillator = oscillators[o];
+
+            // La afinación también se desliza (5 ms): mover Fine no hace zipper y un cambio de octava es un
+            // glissando tan corto que se oye como un salto limpio.
+            SourceLevel::glide (tuning[o], settings.tuningSemitones(), smoothingCoef);
+            const auto& d = destinations[o];
+            oscillator.setPitchOffset (tuning[o] + globalPitch + modulationOf (d.pitch) * pitchModulationSemitones);
+
+            if (oscillatorLevels[o].isSilent (settings.enabled))
+                continue;
+
+            oscillator.setPositionModulation (modulationOf (d.position));
+            oscillator.setDetuneModulation (modulationOf (d.detune));
+            const float gain = oscillatorLevels[o].next (settings.enabled, settings.level, modulationOf (d.level), smoothingCoef);
+
+            if (stereo)
+            {
+                float oscLeft = 0.0f, oscRight = 0.0f;
+                oscillator.processStereo (oscLeft, oscRight);
+                left += gain * oscLeft;
+                right += gain * oscRight;
+            }
+            else
+            {
+                left += gain * oscillator.processSample();
+            }
+        }
+
+        float centre = 0.0f;
+
+        SourceLevel::glide (subTuning, 12.0f * static_cast<float> (sourceSettings.sub.octave), smoothingCoef);
+        subOscillator.setPitchOffset (subTuning + globalPitch);
+        if (! subLevel.isSilent (sourceSettings.sub.enabled))
+        {
+            const float gain = subLevel.next (sourceSettings.sub.enabled, sourceSettings.sub.level, modulationOf (ModDestination::subLevel),
+                                              smoothingCoef);
+            centre += gain * subOscillator.processSample();
+        }
+
+        if (! noiseLevel.isSilent (sourceSettings.noise.enabled))
+        {
+            const float gain = noiseLevel.next (sourceSettings.noise.enabled, sourceSettings.noise.level,
+                                                modulationOf (ModDestination::noiseLevel), smoothingCoef);
+            centre += gain * noise.processSample();
+        }
+
+        left += centre;
+        right += centre;
+    }
+
     void updateFilterCutoff() noexcept
     {
         auto parameters = filterSettings.parameters;
@@ -336,8 +520,18 @@ private:
     static constexpr double controllerSmoothingSeconds = 0.01;
     static constexpr double lfoSmoothingSeconds = 0.001;
 
-    dsp::WavetableOscillator oscillator;
+    std::array<dsp::WavetableOscillator, numOscillators> oscillators;
+    dsp::WavetableOscillator subOscillator;
+    dsp::NoiseGenerator noise;
+    SourceSettings sourceSettings;
+    std::array<SourceLevel, numOscillators> oscillatorLevels;
+    SourceLevel subLevel, noiseLevel;
+    std::array<float, numOscillators> tuning {}; // semitonos, suavizados
+    float subTuning = -12.0f;
+    float smoothingCoef = 1.0f; // 5 ms, para niveles y afinación
+
     dsp::Filter filter;
+    bool filterStereo = false; // el filtro está procesando el canal derecho
     dsp::AdsrEnvelope envelope; // Env 1: amplitud
     dsp::AdsrEnvelope envelope2;
     dsp::AdsrEnvelope envelope3;

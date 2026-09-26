@@ -10,10 +10,11 @@
 #include "gui/LfoDisplay.h"
 #include "gui/WavetableDisplay.h"
 #include "synth/Modulation.h"
+#include "synth/SourceSettings.h"
 
 class UndertowAudioProcessor;
 
-// GUI funcional: oscilador, filtro, envolventes, LFOs, matriz de modulación y voz.
+// GUI funcional: osciladores, sub, ruido, filtro, envolventes, LFOs, matriz de modulación y voz.
 // La GUI profesional (escalable, arrastrar para modular) llega en la Fase 9.
 class UndertowAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
@@ -26,7 +27,7 @@ public:
 
 private:
     void timerCallback() override;
-    void showPage (bool modulation);
+    void showPage (int page);
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
@@ -51,20 +52,41 @@ private:
 
     UndertowAudioProcessor& processor;
 
-    // Dos páginas del mismo tamaño que la ventana de la Fase 4 (cabe en pantallas pequeñas con escalado).
-    juce::Component soundPage, modulationPage;
-    juce::TextButton soundTab { "Sonido" };
+    // Tres páginas del mismo tamaño que la ventana de la Fase 4 (cabe en pantallas pequeñas con escalado).
+    juce::Component oscillatorPage, soundPage, modulationPage;
+    juce::TextButton oscillatorTab { "Osciladores" };
+    juce::TextButton soundTab { "Filtro y Amp" };
     juce::TextButton modulationTab;
     std::array<Knob, numEnvelopeKnobs + numVoiceKnobs> knobs;
 
-    juce::GroupComponent oscillatorGroup { {}, "Oscilador A" };
-    juce::Label wavetableLabel;
-    juce::ComboBox wavetableBox;
-    std::unique_ptr<ComboBoxAttachment> wavetableAttachment;
-    Knob positionKnob;
-    undertow::gui::WavetableDisplay wavetableDisplay;
-    std::atomic<float>* wavetableParam = nullptr;
-    std::atomic<float>* positionParam = nullptr;
+    // --- Fase 6: osciladores A y B, sub y ruido ---
+    static constexpr size_t numOscillatorKnobs = 9; // Position, Octave, Semi, Fine, Level, Pan, Unison, Detune, Width
+
+    struct OscillatorControls
+    {
+        juce::GroupComponent group;
+        juce::ToggleButton onButton { "On" };
+        std::unique_ptr<ButtonAttachment> onAttachment;
+        juce::ComboBox tableBox;
+        std::unique_ptr<ComboBoxAttachment> tableAttachment;
+        std::array<Knob, numOscillatorKnobs> knobs;
+        undertow::gui::WavetableDisplay display;
+        std::atomic<float>* tableParam = nullptr;
+        std::atomic<float>* positionParam = nullptr;
+    };
+    std::array<OscillatorControls, undertow::synth::numOscillators> oscillators;
+
+    juce::GroupComponent subGroup { {}, "Sub" };
+    juce::ToggleButton subOnButton { "On" };
+    std::unique_ptr<ButtonAttachment> subOnAttachment;
+    juce::ComboBox subShapeBox;
+    std::unique_ptr<ComboBoxAttachment> subShapeAttachment;
+    std::array<Knob, 2> subKnobs;
+
+    juce::GroupComponent noiseGroup { {}, "Ruido" };
+    juce::ToggleButton noiseOnButton { "On" };
+    std::unique_ptr<ButtonAttachment> noiseOnAttachment;
+    std::array<Knob, 2> noiseKnobs;
 
     static constexpr size_t numFilterKnobs = 4;
 

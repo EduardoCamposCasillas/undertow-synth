@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <numbers>
@@ -156,31 +157,30 @@ public:
     // (no tiene sentido "barrer" el filtro desde los valores de la nota anterior).
     void reset() noexcept
     {
-        stage1.reset();
-        stage2.reset();
+        for (auto& channel : channels)
+            channel = {};
         snapToTargets();
     }
 
+    // Mono: solo se usa el canal izquierdo.
     [[nodiscard]] float processSample (float input) noexcept
     {
         smoothParameters();
-
-        // Drive: se amplifica y se satura con tanh, que redondea los picos como un transistor saturado.
-        // Añade armónicos ANTES del filtro: con low-pass, el propio filtro recorta los más agudos.
-        float x = input;
-        if (driveMix > 0.0f)
-            x += driveMix * (std::tanh (driveGain * x) - x);
-
-        const auto out1 = stage1.process (x, coefficients1);
-        const float y1 = mix (out1, coefficients1.k);
-
-        // La etapa 2 procesa siempre (también en 12 dB) para que su estado esté "caliente" y pasar
-        // de 12 a 24 dB sea un fundido continuo y no un arranque desde cero.
-        const auto out2 = stage2.process (y1, coefficients2);
-        const float y2 = mix (out2, coefficients2.k);
-
-        return (y1 + (y2 - y1) * current.secondStage) * compensation;
+        return processChannel (input, channels[0]);
     }
+
+    // Estéreo (Fase 6): dos juegos de estado (los "condensadores") y los MISMOS coeficientes. Lo caro
+    // (tan, pow) se calcula una sola vez; el segundo canal cuesta solo las multiplicaciones del filtro.
+    void processStereo (float& left, float& right) noexcept
+    {
+        smoothParameters();
+        left = processChannel (left, channels[0]);
+        right = processChannel (right, channels[1]);
+    }
+
+    // Al pasar de mono a estéreo con la nota sonando, el canal derecho no se procesó y su estado quedó viejo:
+    // arrancar desde ahí sería un salto (clic). Como hasta ese momento L y R eran iguales, basta copiar el izquierdo.
+    void copyLeftStateToRight() noexcept { channels[1] = channels[0]; }
 
     [[nodiscard]] const FilterParameters& getParameters() const noexcept { return parameters; }
 
@@ -202,6 +202,30 @@ private:
         float cutoffOctaves = 0.0f, resonance = 0.0f, drive = 0.0f;
         bool operator== (const Modulation&) const = default;
     };
+
+    struct Channel
+    {
+        SvfStage stage1, stage2;
+    };
+
+    [[nodiscard]] float processChannel (float input, Channel& channel) const noexcept
+    {
+        // Drive: se amplifica y se satura con tanh, que redondea los picos como un transistor saturado.
+        // Añade armónicos ANTES del filtro: con low-pass, el propio filtro recorta los más agudos.
+        float x = input;
+        if (driveMix > 0.0f)
+            x += driveMix * (std::tanh (driveGain * x) - x);
+
+        const auto out1 = channel.stage1.process (x, coefficients1);
+        const float y1 = mix (out1, coefficients1.k);
+
+        // La etapa 2 procesa siempre (también en 12 dB) para que su estado esté "caliente" y pasar
+        // de 12 a 24 dB sea un fundido continuo y no un arranque desde cero.
+        const auto out2 = channel.stage2.process (y1, coefficients2);
+        const float y2 = mix (out2, coefficients2.k);
+
+        return (y1 + (y2 - y1) * current.secondStage) * compensation;
+    }
 
     // El band-pass se multiplica por k para que su pico valga 1 con cualquier resonancia.
     [[nodiscard]] float mix (const SvfStage::Outputs& o, float k) const noexcept
@@ -308,7 +332,7 @@ private:
     Smoothed target;
     Smoothed current;
     Modulation modulation, appliedModulation;
-    SvfStage stage1, stage2;
+    std::array<Channel, 2> channels {};
     SvfStage::Coefficients coefficients1, coefficients2;
     double sampleRate = 44100.0;
     float smoothingCoef = 1.0f;

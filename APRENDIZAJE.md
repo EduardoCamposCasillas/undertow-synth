@@ -611,3 +611,183 @@ Inténtalo primero; las pistas vendrán después.
 
 ### Retos completados
 - [ ] Reto Fase 5 — sidechain falso con modulación
+
+---
+
+## Fase 6 — Dos osciladores, sub, ruido y unison
+
+### Conceptos aprendidos
+- **Capas (layering).** Dos osciladores sonando a la vez simplemente se **suman**. Si están afinados a intervalos
+  "limpios" (octava, quinta) el oído los funde en un solo sonido más rico; si están casi a la misma frecuencia,
+  aparecen batidos (siguiente punto). Casi todos los sonidos grandes de un sinte son 2–4 capas.
+- **Afinación en tres escalas.** Una **octava** duplica la frecuencia (×2). Un **semitono** es la 12.ª parte de una
+  octava: ×2^(1/12) ≈ ×1.0595. Un **cent** es la centésima parte de un semitono. Octave/Semi eligen el intervalo;
+  Fine es para desafinar un poco a propósito.
+- **Batidos (beating).** Dos ondas de frecuencias muy cercanas se refuerzan y se cancelan alternativamente: el volumen
+  "pulsa" **|f1 − f2|** veces por segundo. Con 440 Hz y 442 Hz: 2 pulsos por segundo. Es la base de todo el "grosor"
+  de un sinte: un pulso lento suena a coro que respira; muchos pulsos rápidos a la vez suenan a masa densa.
+  Los mismos cents dan batidos más rápidos en notas agudas (hay más Hz entre las dos ondas): por eso un detune
+  que suena bien en un pad grave puede sonar "desafinado" en un lead agudo.
+- **Unison.** El oscilador toca N copias de la misma onda, cada una un poco desafinada respecto a las demás. Es
+  como pasar de un violín a una sección de cuerdas: nadie toca exactamente igual y eso suena "grande".
+  Tres decisiones del código que tienen consecuencias sonoras:
+  1. **Detune en curva.** La mitad baja de la perilla (hasta ±25 cents) es la zona fina del coro; la mitad alta
+     llega a ±100 cents (1 semitono), ya claramente desafinado. Las copias quedan a distancias iguales en cents.
+  2. **Fases al azar.** Con varias copias, cada nota empieza con las copias en posiciones distintas del ciclo. Si
+     todas salieran a la vez, el principio de cada nota tendría un pico fuerte y un barrido tipo "flanger".
+     (Con 1 copia, la fase empieza siempre en 0: los bajos arrancan siempre con el mismo golpe.)
+  3. **El volumen no sube con el número de copias.** Copias con fases distintas no suman amplitudes sino
+     potencias: N copias tendrían √N veces más amplitud. Cada una se atenúa a 1/√N, así que 1 o 16 copias suenan
+     igual de fuerte (medido: ±0.03 dB). Lo que cambia es el **carácter**, no el volumen.
+- **Estéreo.** Si el canal izquierdo y el derecho son distintos, el oído percibe **ancho**. Width reparte las copias
+  del unison de izquierda a derecha (en parejas: una grave y una aguda a cada lado, para que ningún lado suene
+  "desafinado hacia abajo"). Pan mueve el oscilador entero.
+- **Ley de paneo "equal power".** Al panear, la **potencia** total (L² + R²) se mantiene: un sonido no parece más
+  débil por moverlo a un lado. En el centro L = R = 1, así que un sonido sin paneo suena igual que en la Fase 5.
+- **Compatibilidad mono.** Muchos sistemas suman los dos canales (L + R): altavoces de discoteca, teléfonos, Bluetooth.
+  Un unison muy abierto pierde algo de nivel y de "tamaño" al sumarse en mono (las copias de los lados, hasta −3 dB).
+  Por eso los graves se mantienen **mono y centrados**: el sub de Undertow es mono siempre, y en los bajos el Width
+  del unison se deja bajo.
+- **Sub-oscilador.** Un oscilador simple (seno, triángulo…) una o dos octavas por debajo de la nota. No aporta
+  "timbre": aporta **peso**, la fundamental que el oído siente en el pecho. Es la capa que sostiene un bajo.
+- **Ruido.** Todas las frecuencias a la vez, al azar. **Blanco** = la misma energía en cada Hz (suena agudo, "shhh",
+  porque en los agudos hay muchísimos más Hz). El **Color** lo inclina: oscuro = viento, mar, retumbo; brillante =
+  hi-hat, aire, soplido. Mezclado en poca cantidad da "aire" a un pad o "chasquido" al ataque de un pluck.
+- **Aliasing con unison.** El mipmap de la Fase 3 se elige para la copia **más aguda**: ninguna copia se refleja
+  (medido: −92.8 dB con una sierra a ±1 semitono).
+- **Coste de CPU.** Cada copia del unison se calcula aparte: 16 notas con los dos osciladores a 16 copias son 512
+  osciladores sonando. Un supersaw normal (8 notas × 7 copias) cuesta ≈ 9 % de un núcleo; todo al máximo, ≈ 70 %.
+  Úsalo donde se oye (pads, leads), no "por si acaso".
+
+### Qué hace cada control al sonido
+| Control | Qué se oye | En el analizador / osciloscopio |
+|---|---|---|
+| **Osc B On + Level** | Una segunda capa: más cuerpo o un timbre mezclado de dos tablas. | Se suman los armónicos de las dos ondas. |
+| **Octave** | La capa sube o baja de registro. +1 = brillo "de órgano"; −1 = más cuerpo. | La montaña de armónicos se mueve al doble o a la mitad. |
+| **Semi** | Intervalos: +7 = quinta ("power chord" en una tecla), +12 = octava, +3/+4 = acorde menor/mayor. | Dos series de armónicos intercaladas. |
+| **Fine** | Poco (3–10 ct): batidos lentos, grosor analógico. Mucho (30–100 ct): desafinado, inquietante. | En el osciloscopio la forma "gira" y cambia lentamente. |
+| **Pan** | Mueve el oscilador a la izquierda o a la derecha. | En un vectorscope, la línea se inclina. |
+| **Unison** | 1 = una sola onda, limpia y "puntual". 3–7 = coro, sinte clásico. 9–16 = muro de sonido. | Cada armónico se vuelve un racimo de líneas muy juntas. |
+| **Detune** | 0–15 %: coro sutil. 25–40 %: supersaw de trance. 60–100 %: desafinado, "sucio", disonante. | El racimo de cada armónico se ensancha. |
+| **Width** | 0 %: todas las copias en el centro (mono). 100 %: el sonido llena de lado a lado (mejor con auriculares). | Vectorscope: de una línea vertical a una nube. |
+| **Sub (forma)** | Sine: peso puro e invisible. Triangle: un poco más audible en altavoces pequeños. Saw/Square: bajo "retro". | Un pico enorme en 30–100 Hz; Saw/Square añaden armónicos. |
+| **Sub Octave / Level** | −1: refuerza la nota. −2: sub-grave profundo (se siente más que se oye). | El pico baja una o dos octavas. |
+| **Ruido Level** | Poco (5–15 %): aire y textura. Mucho: soplido, efecto. | Una "alfombra" sobre todo el espectro. |
+| **Ruido Color** | 0 %: retumbo oscuro. 50 %: blanco, "shhh". 100 %: "tsss" fino, como un hi-hat. | La alfombra se inclina hacia los graves o hacia los agudos. |
+| **Destinos nuevos** | Env → Noise Level: un "chasquido" de ruido en el ataque. LFO → Osc A Detune: el coro respira. Env → Global Pitch: caída de tono de todo el sinte a la vez. | — |
+
+### Ejercicio de escucha guiado
+Montaje: en el canal del Mixer de Undertow, **Fruity Parametric EQ 2** (para ver el espectro) y **Wave Candy**.
+En Wave Candy, abre los presets y elige uno de **Vectorscope** (muestra el estéreo: una línea vertical = mono, una
+nube = ancho). Usa **auriculares** para los pasos de estéreo. Todo lo nuevo está en la pestaña **Osciladores**.
+
+1. **Batidos.** Osc A: *Basic Shapes* **0 %** (seno). Enciende **Osc B**: *Basic Shapes* 0 %, todo igual que A.
+   Toca **A5 (440 Hz)**: suena igual, solo más fuerte. Sube **Fine de B** a **+1 ct**: aparece un "uaaa-uaaa" muy lento
+   (≈ 0.25 pulsos por segundo). Pasa a **+5 ct** (≈ 1.3 pulsos/s), **+20 ct** (≈ 5/s) y **+50 ct** (≈ 13/s, ya rugoso).
+   Con Fine en +20 ct toca **C3 (131 Hz)** y luego **C7 (2093 Hz)**: los mismos cents pulsan mucho más rápido en la nota
+   aguda.
+2. **Intervalos.** Fine de B a 0. Semi de B a **+7** y toca una nota: una quinta, el "power chord" del rock en una sola
+   tecla. Prueba **+12**, **+3** y **+4**. Vuelve a 0 y pon **Octave +1** con Level de B al **40 %**: la capa aguda
+   añade brillo sin que se oiga como "otra nota".
+3. **Unison.** Apaga Osc B. Osc A: *Basic Shapes* **67 %** (sierra). Mantén un acorde **C5-E5-G5** y sube **Unison** de
+   1 a 2, 4, 8 y 16 (Detune 25 %, Width 80 %): cada paso "engorda" el sonido, pero el volumen no sube. Con Unison 7,
+   mueve **Detune** de 0 % a 10 %, 25 %, 50 % y 100 %: de un sonido limpio a un coro, a un supersaw y a algo desafinado.
+4. **Ancho.** Unison 7, Detune 30 %. Mueve **Width** de 0 % a 100 % mirando el vectorscope: la línea vertical se abre en
+   una nube. Con auriculares, el sonido pasa de estar "dentro de la cabeza" a rodearte. Mueve **Pan** de L 100 a R 100.
+5. **Prueba de mono.** Con Width 100 %, gira la perilla de **separación estéreo** de la pista del Mixer (en el panel del
+   insert) hasta el extremo "merge" (mono). El sonido se estrecha y pierde un poco de brillo y nivel: eso es lo que
+   oirá alguien con un altavoz Bluetooth. Vuelve a dejarla en el centro.
+6. **Sub.** Osc A: sierra, Unison 1. Enciende **Sub**: *Sine*, Octave **−1**, Level 75 %. Toca **A2 (55 Hz)** y **A3 (110 Hz)**
+   apagando y encendiendo el sub: en el EQ aparece un pico grande en la fundamental. En altavoces pequeños casi no se oye;
+   en auriculares o monitores buenos se **siente**. Prueba *Triangle* y *Square*: se oyen más en altavoces pequeños.
+7. **Ruido.** Apaga Osc A y Sub. Enciende **Ruido**, Level 50 %. Mantén una nota y mueve **Color** de 0 % a 100 %: de
+   viento/mar a "shhh" y a "tsss". Mira cómo la alfombra del EQ se inclina.
+8. **Ruido solo en el ataque.** Enciende Osc A (sierra). Ruido: Level **0 %**, Color **70 %**. En la pestaña Modulación:
+   Env 2 con Attack 1 ms, Decay **60 ms**, Sustain 0 %, y la ruta **Env 2 → Noise Level, +40 %**. Cada nota empieza con
+   un "tsk" de ruido que desaparece enseguida: es un **transitorio** artificial, el truco de los plucks modernos.
+9. **Artefactos a buscar:** clics al cambiar Unison, Width o Pan con un acorde sonando, al encender/apagar Osc B, el Sub
+   o el Ruido (no debería haber ninguno); un leve deslizamiento (5 ms) al cambiar Octave con una nota sonando es normal.
+   Con Unison 16 en los dos osciladores y acordes grandes, mira el medidor de CPU de FL (arriba): sube bastante.
+
+### Recetas
+**1. Supersaw de trance (lead o acordes, 138 BPM)**
+1. Osc A: *Basic Shapes* **67 %** (sierra), Unison **7**, Detune **35 %**, Width **100 %**, Level 100 %.
+2. Osc B: **On**, *Basic Shapes* **67 %**, Octave **+1**, Unison **5**, Detune **25 %**, Width **100 %**, Level **45 %**.
+3. Voices **8**. Env 1: Attack **5 ms**, Decay 500 ms, Sustain **100 %**, Release **350 ms**.
+4. Filtro **On**, **Low Pass 12 dB**, Cutoff **7 kHz**, Resonance 10 %: quita la "arena" de arriba sin apagarlo.
+5. Master a **−6 dB** (dos osciladores con unison suman mucha energía).
+6. Piano Roll: acordes **A4-C5-E5** / **F4-A4-C5** / **C5-E5-G5** / **G4-B4-D5**, un compás cada uno.
+7. *Por qué funciona:* la sierra tiene todos los armónicos (brillo); las 7 copias con ±12 cents dan el "coro" del
+   Roland JP-8000, el sinte que creó este sonido; la capa una octava arriba añade el brillo "que corta" y el Width lo
+   abre a todo el panorama. El filtro suave quita la aspereza de los armónicos más altos.
+
+**2. Reese bass (drum & bass, 174 BPM)**
+1. Osc A: *Basic Shapes* **67 %** (sierra), Unison **1**.
+2. Osc B: **On**, *Basic Shapes* **67 %**, Fine **+15 ct**, Unison **1**, Level 100 %. (Dos sierras casi iguales: los
+   batidos lentos entre ellas son **el** sonido reese.)
+3. Sub: **On**, *Sine*, Octave **−1**, Level **70 %**.
+4. Voices **1**. Env 1: Attack 3 ms, Decay 500 ms, Sustain **100 %**, Release **80 ms**.
+5. Filtro **On**, **Low Pass 24 dB**, Cutoff **350 Hz**, Resonance **20 %**, Drive **35 %**.
+6. Modulación: LFO 1 *Triangle*, **Free**, **Sync**, Division **2 bars**; ruta **LFO 1 → Filter Cutoff, +12 %**
+   (el filtro se abre y cierra despacio, ±1.2 octavas). Ruta 2: **LFO 1 → Osc B Pitch, 0.4 %** (el batido se acelera
+   y se frena: el reese "se mueve").
+7. Piano Roll: notas largas (1–2 compases) en **F3 (87 Hz)**, **E3 (82 Hz)** y **G3 (98 Hz)**.
+8. *Por qué funciona:* el batido entre las dos sierras crea un movimiento que "rueda"; el sub mono y centrado sostiene
+   la fundamental aunque el batido cancele los graves de las sierras por momentos, y el filtro con drive lo vuelve
+   oscuro y agresivo. Width no importa aquí: sin unison, el bajo es mono (como debe ser un bajo en una pista de club).
+
+**3. Pad con aire (ambient, lo-fi)**
+1. Osc A: *Vowels*, Position **40 %**, Unison **5**, Detune **20 %**, Width **100 %**.
+2. Osc B: **On**, *Harmonic Build*, Position **30 %**, Octave **−1**, Unison **3**, Detune **15 %**, Width **60 %**,
+   Level **50 %**.
+3. Ruido: **On**, Level **12 %**, Color **75 %** (un soplido fino, como el aire de una voz).
+4. Voices **8**. Env 1: Attack **900 ms**, Decay 1 s, Sustain **100 %**, Release **2 s**.
+5. Filtro **On**, **Low Pass 12 dB**, Cutoff **3 kHz**.
+6. Modulación: LFO 1 *Sine*, Free, Sync apagado, Rate **0.1 Hz**; rutas **LFO 1 → Osc A Position, +25 %** y
+   **LFO 1 → Osc A Detune, +10 %** (el coro se abre y se cierra con el cambio de vocal).
+7. Piano Roll: acordes de 4 compases en la zona **C4–C6**.
+8. *Por qué funciona:* dos tablas distintas a una octava de distancia dan un timbre que ninguna tiene sola; el unison
+   abierto lo vuelve envolvente y el ruido fino le da la sensación de "aire" de un pad grabado. El LFO lento mueve la
+   vocal y el ancho a la vez: el pad parece respirar.
+
+### Reto sin receta
+**El chord stab de future bass.** En el future bass (Flume, San Holo, Illenium) los acordes son golpes cortos,
+enormes y muy anchos, que se abren en brillo al principio de cada golpe y tienen un "tsk" de aire en el ataque.
+Tu reto, a **150 BPM**: un patrón de acordes en corcheas con síncopas (por ejemplo **F4-A4-C5-E5**), donde cada golpe:
+- dure poco (se apague antes del siguiente) y suene **ancho** con auriculares,
+- empiece brillante y se oscurezca enseguida,
+- tenga un pequeño transitorio de ruido,
+- y **siga sonando lleno** con la separación estéreo del Mixer en mono (no puede "desaparecer").
+
+Inténtalo primero; las pistas vendrán después.
+
+### Vocabulario
+- **Capa (layer).** Varios osciladores sonando juntos como un solo sonido. *Ejemplo:* casi cualquier lead de EDM son
+  2–3 capas (una sierra, una octava arriba y un sub).
+- **Intervalo / quinta / octava.** La distancia entre dos notas; la quinta son 7 semitonos y la octava 12.
+  *Ejemplo:* los "power chords" de guitarra (nota + quinta) en "Smells Like Teen Spirit".
+- **Cent.** 1/100 de semitono. *Ejemplo:* los afinadores de guitarra muestran cuántos cents te faltan.
+- **Batido (beating).** El pulso de volumen entre dos frecuencias cercanas. *Ejemplo:* dos cuerdas de guitarra casi
+  afinadas: "uaa-uaa-uaa" antes de ajustar la clavija.
+- **Detune.** Desafinar a propósito copias u osciladores. *Ejemplo:* el grosor de los sintes de "Blinding Lights"
+  (The Weeknd).
+- **Unison.** Varias copias desafinadas de la misma onda. *Ejemplo:* los leads de big room y trance ("Animals",
+  Martin Garrix).
+- **Supersaw.** Unison de sierras, originalmente del Roland JP-8000 (1996). *Ejemplo:* "Sandstorm" (Darude) y todo el
+  trance de los 2000.
+- **Ancho estéreo (width).** Cuánto se separan izquierda y derecha. *Ejemplo:* los pads que te "rodean" en los
+  auriculares en la música ambient.
+- **Paneo / ley de paneo.** Colocar un sonido en el panorama; "equal power" mantiene su volumen percibido.
+  *Ejemplo:* la batería de los Beatles paneada a un lado en las mezclas estéreo de los 60.
+- **Compatibilidad mono.** Que una mezcla siga sonando bien al sumar L + R. *Ejemplo:* un club o un altavoz
+  Bluetooth: si el bajo es muy ancho, pierde pegada.
+- **Sub / sub bass.** La parte más grave, que se siente más que se oye (≈ 30–80 Hz). *Ejemplo:* los 808 del trap.
+- **Ruido blanco / color del ruido.** Todas las frecuencias al azar; el color decide si predominan graves o agudos.
+  *Ejemplo:* los "risers" (subidas de ruido) antes de un drop.
+- **Transitorio.** El inicio brevísimo y brillante de un sonido. *Ejemplo:* el "tick" de la púa en una guitarra o el
+  "tsk" de ruido al principio de un pluck de future bass.
+- **Reese.** Bajo de dos sierras ligeramente desafinadas. *Ejemplo:* el drum & bass de los 90 (el nombre viene de
+  "Just Want Another Chance", de Reese / Kevin Saunderson).
+
+### Retos completados
+- [ ] Reto Fase 6 — chord stab de future bass

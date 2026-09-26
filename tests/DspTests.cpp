@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <numbers>
 #include <random>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1483,6 +1484,589 @@ void testModulationCpuCost()
     CHECK (finite);
     CHECK (peak < 20.0f);
 }
+
+// --- Fase 6: osciladores A y B, sub, ruido y unison ----------------------------------------------
+
+using undertow::synth::SourceSettings;
+using undertow::synth::SubShape;
+
+struct StereoSignal
+{
+    std::vector<float> left, right;
+};
+
+StereoSignal renderStereo (VoiceManager& manager, int numSamples)
+{
+    StereoSignal signal { std::vector<float> (static_cast<size_t> (numSamples), 0.0f),
+                          std::vector<float> (static_cast<size_t> (numSamples), 0.0f) };
+    manager.render (signal.left.data(), signal.right.data(), numSamples);
+    return signal;
+}
+
+double rmsOf (const std::vector<float>& signal)
+{
+    double sum = 0.0;
+    for (const float s : signal)
+        sum += static_cast<double> (s) * s;
+    return std::sqrt (sum / static_cast<double> (signal.size()));
+}
+
+// Osc A y B con el seno de prueba (B apagado) y el sub con "Basic Shapes", como en el plugin.
+SourceSettings sineSources()
+{
+    SourceSettings sources;
+    sources.oscillators[0].table = &sineTable();
+    sources.oscillators[1].table = &sineTable();
+    sources.subTable = &factoryBank().get (0);
+    return sources;
+}
+
+void prepareWithSources (VoiceManager& manager, double sampleRate, const SourceSettings& sources)
+{
+    manager.prepare (sampleRate);
+    manager.setSourceSettings (sources);
+    manager.setEnvelopeParameters ({ 0.001f, 0.001f, 1.0f, 0.1f });
+    manager.setVelocitySensitivity (0.0f);
+}
+
+void testUnisonDetuneSpread()
+{
+    std::printf ("Unison: copias a distancias iguales en cents (detune 100 %% = ±100 cents, 50 %% = ±25 cents)\n");
+
+    double worstCents = 0.0;
+    for (const double sr : sampleRates)
+    {
+        for (const auto& [voices, detune, spread] : { std::tuple { 3, 1.0f, 100.0 }, std::tuple { 7, 0.5f, 25.0 } })
+        {
+            auto sources = sineSources();
+            sources.oscillators[0].unison = voices;
+            sources.oscillators[0].detune = detune;
+            VoiceManager manager;
+            prepareWithSources (manager, sr, sources);
+            manager.noteOn (69, 1.0f); // A5 de FL, 440 Hz
+            renderSilently (manager, 64);
+
+            const auto& osc = findVoice (manager, 69)->getOscillator (0);
+            CHECK (osc.getNumVoices() == voices);
+            for (int k = 0; k < voices; ++k)
+            {
+                const double expected = -spread + 2.0 * spread * k / (voices - 1);
+                const double cents = centsBetween (osc.getVoiceFrequency (k), 440.0);
+                worstCents = std::max (worstCents, std::abs (cents - expected));
+            }
+        }
+    }
+    std::printf ("  peor error de la posición de cada copia: %.6f cents\n", worstCents);
+    CHECK (worstCents < 0.001);
+
+    // En el audio: 3 copias con detune 100 % = tres picos del mismo nivel en 415.3, 440 y 466.2 Hz, y nada entre ellos.
+    // Ancho 0: con las copias abiertas, la suma mono de las de los lados pierde nivel (ley de paneo equal power).
+    auto sources = sineSources();
+    sources.oscillators[0].unison = 3;
+    sources.oscillators[0].detune = 1.0f;
+    sources.oscillators[0].width = 0.0f;
+    VoiceManager manager;
+    prepareWithSources (manager, 48000.0, sources);
+    manager.noteOn (69, 1.0f);
+    renderSilently (manager, 480);
+    std::vector<float> signal (65536, 0.0f);
+    manager.render (signal.data(), static_cast<int> (signal.size()));
+
+    const auto spectrum = magnitudeSpectrum (signal);
+    const double binHz = 48000.0 / 65536.0;
+    const double low = componentLevel (spectrum, 440.0 * std::exp2 (-1.0 / 12.0), binHz);
+    const double centre = componentLevel (spectrum, 440.0, binHz);
+    const double high = componentLevel (spectrum, 440.0 * std::exp2 (1.0 / 12.0), binHz);
+    const double between = componentLevel (spectrum, 427.0, binHz);
+    std::printf ("  picos: %.2f / %.2f / %.2f dB; entre ellos: %.1f dB\n", toDb (low / centre), 0.0, toDb (high / centre),
+                 toDb (between / centre));
+    CHECK (std::abs (toDb (low / centre)) < 0.1);
+    CHECK (std::abs (toDb (high / centre)) < 0.1);
+    CHECK (toDb (between / centre) < -60.0);
+}
+
+void testUnisonKeepsLoudness()
+{
+    std::printf ("Unison: el volumen percibido (RMS) no cambia al subir el número de copias\n");
+
+    const auto measure = [] (int voices) {
+        auto sources = sineSources();
+        sources.oscillators[0].unison = voices;
+        sources.oscillators[0].detune = 1.0f;
+        sources.oscillators[0].width = 0.0f;
+        VoiceManager manager;
+        prepareWithSources (manager, 48000.0, sources);
+        manager.noteOn (57, 1.0f); // 220 Hz
+        renderSilently (manager, 480);
+        std::vector<float> signal (48000 * 4, 0.0f);
+        manager.render (signal.data(), static_cast<int> (signal.size()));
+        return rmsOf (signal);
+    };
+
+    const double reference = measure (1);
+    for (const int voices : { 2, 4, 8, 16 })
+    {
+        const double db = toDb (measure (voices) / reference);
+        std::printf ("  %2d copias: %+.2f dB\n", voices, db);
+        CHECK (std::abs (db) < 1.5);
+    }
+}
+
+void testStereoWidthAndPan()
+{
+    std::printf ("Estéreo: sin unison ni paneo L = R (= salida mono); ancho y paneo equal power\n");
+
+    const auto render = [] (const SourceSettings& sources, bool stereo) {
+        VoiceManager manager;
+        prepareWithSources (manager, 48000.0, sources);
+        manager.noteOn (57, 1.0f);
+        manager.noteOn (64, 1.0f);
+        renderSilently (manager, 480);
+        if (stereo)
+            return renderStereo (manager, 48000);
+        StereoSignal mono { std::vector<float> (48000, 0.0f), {} };
+        manager.render (mono.left.data(), 48000);
+        return mono;
+    };
+    const auto maxDifference = [] (const std::vector<float>& a, const std::vector<float>& b) {
+        float difference = 0.0f;
+        for (size_t i = 0; i < a.size(); ++i)
+            difference = std::max (difference, std::abs (a[i] - b[i]));
+        return difference;
+    };
+
+    // Por defecto (Osc A sin unison, centrado): los dos canales son idénticos e iguales a la salida mono.
+    const auto centred = render (sineSources(), true);
+    CHECK (maxDifference (centred.left, centred.right) == 0.0f);
+    CHECK (maxDifference (centred.left, render (sineSources(), false).left) < 1.0e-7f);
+
+    // Unison con ancho 0: sigue siendo mono.
+    auto sources = sineSources();
+    sources.oscillators[0].unison = 8;
+    sources.oscillators[0].width = 0.0f;
+    const auto narrow = render (sources, true);
+    CHECK (maxDifference (narrow.left, narrow.right) == 0.0f);
+
+    // Ancho 100 %: los canales se separan (correlación baja) pero quedan equilibrados.
+    sources.oscillators[0].width = 1.0f;
+    const auto wide = render (sources, true);
+    double lr = 0.0, ll = 0.0, rr = 0.0;
+    for (size_t i = 0; i < wide.left.size(); ++i)
+    {
+        lr += static_cast<double> (wide.left[i]) * wide.right[i];
+        ll += static_cast<double> (wide.left[i]) * wide.left[i];
+        rr += static_cast<double> (wide.right[i]) * wide.right[i];
+    }
+    const double correlation = lr / std::sqrt (ll * rr);
+    const double balanceDb = toDb (rmsOf (wide.left) / rmsOf (wide.right));
+    std::printf ("  8 copias, ancho 100 %%: correlación L/R %.2f, equilibrio %+.2f dB\n", correlation, balanceDb);
+    CHECK (correlation < 0.7);
+    CHECK (std::abs (balanceDb) < 1.5);
+
+    // Paneo: todo a la derecha deja el izquierdo en silencio; la potencia total (L² + R²) no cambia con el paneo.
+    const double centrePower = 2.0 * rmsOf (centred.left) * rmsOf (centred.left);
+    for (const float pan : { 1.0f, -0.5f, 0.3f })
+    {
+        auto panned = sineSources();
+        panned.oscillators[0].pan = pan;
+        const auto out = render (panned, true);
+        const double power = rmsOf (out.left) * rmsOf (out.left) + rmsOf (out.right) * rmsOf (out.right);
+        std::printf ("  paneo %+.1f: L %.4f  R %.4f  potencia %+.3f dB\n", static_cast<double> (pan), rmsOf (out.left),
+                     rmsOf (out.right), 10.0 * std::log10 (power / centrePower));
+        CHECK (std::abs (10.0 * std::log10 (power / centrePower)) < 0.05);
+        if (pan == 1.0f)
+            CHECK (rmsOf (out.left) < 1.0e-6);
+    }
+}
+
+void testSourceChangesAreClickFree()
+{
+    std::printf ("Cambiar unison, detune, ancho, paneo, afinación o encender/apagar fuentes no produce clics\n");
+
+    auto sources = sineSources();
+    sources.oscillators[1].octave = -1;
+    VoiceManager manager;
+    prepareWithSources (manager, 48000.0, sources);
+    manager.noteOn (45, 1.0f); // 110 Hz
+
+    constexpr std::array<int, 5> unison { 1, 5, 16, 2, 9 };
+    constexpr std::array<float, 3> pans { -1.0f, 0.7f, 0.0f };
+    StereoSignal output;
+    for (int step = 0; step < 40; ++step)
+    {
+        auto& a = sources.oscillators[0];
+        a.unison = unison[static_cast<size_t> (step) % unison.size()];
+        a.detune = step % 3 == 0 ? 1.0f : 0.1f;
+        a.width = step % 2 == 0 ? 1.0f : 0.0f;
+        a.pan = pans[static_cast<size_t> (step) % pans.size()];
+        a.fineCents = step % 2 == 0 ? 40.0f : -40.0f;
+        a.level = step % 4 == 0 ? 0.3f : 1.0f;
+        sources.oscillators[1].enabled = step % 2 == 1;
+        sources.sub.enabled = step % 3 == 1;
+        manager.setSourceSettings (sources);
+
+        const auto block = renderStereo (manager, 2400);
+        output.left.insert (output.left.end(), block.left.begin(), block.left.end());
+        output.right.insert (output.right.end(), block.right.begin(), block.right.end());
+    }
+
+    const float jump = std::max (maxSampleJump (output.left), maxSampleJump (output.right));
+    std::printf ("  salto máximo entre muestras: %.5f\n", static_cast<double> (jump));
+    // Sin suavizado, apagar Osc B o pasar de 1 a 16 copias daría saltos de ~0.2.
+    CHECK (jump < 0.03f);
+}
+
+void testOscillatorTuning()
+{
+    std::printf ("Afinación de Osc B (Octave / Semi / Fine) y del sub, medida en el audio (4 sample rates)\n");
+
+    double worstCents = 0.0;
+    for (const double sr : sampleRates)
+    {
+        struct Case
+        {
+            int octave, semitones;
+            float fine;
+        };
+        for (const auto& c : { Case { 1, 7, 50.0f }, Case { -2, -12, -100.0f }, Case { 0, 3, 12.5f } })
+        {
+            auto sources = sineSources();
+            sources.oscillators[0].enabled = false;
+            sources.oscillators[1].enabled = true;
+            sources.oscillators[1].octave = c.octave;
+            sources.oscillators[1].semitones = c.semitones;
+            sources.oscillators[1].fineCents = c.fine;
+            VoiceManager manager;
+            prepareWithSources (manager, sr, sources);
+            manager.noteOn (57, 1.0f); // 220 Hz
+            renderSilently (manager, static_cast<int> (0.01 * sr));
+            std::vector<float> signal (static_cast<size_t> (sr), 0.0f);
+            manager.render (signal.data(), static_cast<int> (signal.size()));
+
+            const double semitones = 12.0 * c.octave + c.semitones + c.fine / 100.0;
+            const double cents = centsBetween (measureFrequency (signal, sr), 220.0 * std::exp2 (semitones / 12.0));
+            worstCents = std::max (worstCents, std::abs (cents));
+        }
+
+        for (const int octave : { -1, -2 })
+        {
+            auto sources = sineSources();
+            sources.oscillators[0].enabled = false;
+            sources.sub.enabled = true;
+            sources.sub.octave = octave;
+            VoiceManager manager;
+            prepareWithSources (manager, sr, sources);
+            manager.noteOn (57, 1.0f);
+            renderSilently (manager, static_cast<int> (0.01 * sr));
+            std::vector<float> signal (static_cast<size_t> (sr), 0.0f);
+            manager.render (signal.data(), static_cast<int> (signal.size()));
+            const double cents = centsBetween (measureFrequency (signal, sr), 220.0 * std::exp2 (octave));
+            worstCents = std::max (worstCents, std::abs (cents));
+        }
+    }
+    std::printf ("  peor desviación: %.5f cents\n", worstCents);
+    CHECK (worstCents < 0.05);
+}
+
+void testSubShapes()
+{
+    std::printf ("Formas del sub: seno puro; cuadrada con armónicos impares (3.º a 1/3)\n");
+
+    const auto spectrumOf = [] (SubShape shape) {
+        auto sources = sineSources();
+        sources.oscillators[0].enabled = false;
+        sources.sub.enabled = true;
+        sources.sub.shape = shape;
+        VoiceManager manager;
+        prepareWithSources (manager, 48000.0, sources);
+        manager.noteOn (57, 1.0f); // sub a 110 Hz
+        renderSilently (manager, 4800);
+        std::vector<float> signal (65536, 0.0f);
+        manager.render (signal.data(), static_cast<int> (signal.size()));
+        return magnitudeSpectrum (signal);
+    };
+    const double binHz = 48000.0 / 65536.0;
+
+    const auto sine = spectrumOf (SubShape::sine);
+    const double sineFundamental = componentLevel (sine, 110.0, binHz);
+    const double sineSecond = toDb (componentLevel (sine, 220.0, binHz) / sineFundamental);
+    const double sineThird = toDb (componentLevel (sine, 330.0, binHz) / sineFundamental);
+
+    const auto square = spectrumOf (SubShape::square);
+    const double squareFundamental = componentLevel (square, 110.0, binHz);
+    const double squareSecond = toDb (componentLevel (square, 220.0, binHz) / squareFundamental);
+    const double squareThird = toDb (componentLevel (square, 330.0, binHz) / squareFundamental);
+
+    std::printf ("  seno: 2.º %.0f dB, 3.º %.0f dB | cuadrada: 2.º %.0f dB, 3.º %.2f dB (ideal -9.54)\n", sineSecond,
+                 sineThird, squareSecond, squareThird);
+    CHECK (sineSecond < -80.0 && sineThird < -80.0);
+    CHECK (squareSecond < -60.0);
+    CHECK (std::abs (squareThird + 9.54) < 0.3);
+}
+
+void testNoiseColor()
+{
+    std::printf ("Ruido: blanco al 50 %% (espectro plano), oscuro al 0 %%, brillante al 100 %%\n");
+
+    const auto bandBalanceDb = [] (float color) {
+        auto sources = sineSources();
+        sources.oscillators[0].enabled = false;
+        sources.noise.enabled = true;
+        sources.noise.color = color;
+        VoiceManager manager;
+        prepareWithSources (manager, 48000.0, sources);
+        manager.noteOn (60, 1.0f);
+        renderSilently (manager, 480);
+        std::vector<float> signal (65536, 0.0f);
+        manager.render (signal.data(), static_cast<int> (signal.size()));
+
+        double mean = 0.0;
+        bool finite = true;
+        for (const float s : signal)
+        {
+            mean += s;
+            finite = finite && std::isfinite (s);
+        }
+        CHECK (finite);
+        CHECK (std::abs (mean / static_cast<double> (signal.size())) < 0.05 * rmsOf (signal) + 1.0e-6);
+
+        // Energía media por bin (= por Hz) en una banda grave y en una aguda.
+        const auto spectrum = magnitudeSpectrum (signal);
+        const double binHz = 48000.0 / 65536.0;
+        const auto bandPower = [&] (double fromHz, double toHz) {
+            double sum = 0.0;
+            int count = 0;
+            for (auto k = static_cast<size_t> (fromHz / binHz); k < static_cast<size_t> (toHz / binHz); ++k, ++count)
+                sum += spectrum[k] * spectrum[k];
+            return sum / count;
+        };
+        return 10.0 * std::log10 (bandPower (8000.0, 12000.0) / bandPower (300.0, 700.0));
+    };
+
+    const double white = bandBalanceDb (0.5f);
+    const double dark = bandBalanceDb (0.0f);
+    const double bright = bandBalanceDb (1.0f);
+    std::printf ("  agudos (8-12 kHz) respecto a graves (300-700 Hz): blanco %+.1f dB, oscuro %+.1f dB, brillante %+.1f dB\n",
+                 white, dark, bright);
+    CHECK (std::abs (white) < 1.5);
+    CHECK (dark < -20.0);
+    CHECK (bright > 20.0);
+}
+
+void testPhase6Destinations()
+{
+    std::printf ("Destinos nuevos: Global Pitch mueve A, B y sub; Osc B Pitch solo a B; Detune y Level desde la matriz\n");
+
+    const auto setUp = [] (VoiceManager& manager, undertow::synth::ModSlot slot, SourceSettings sources) {
+        sources.oscillators[1].enabled = true;
+        sources.sub.enabled = true;
+        prepareWithSources (manager, 48000.0, sources);
+        ModulationSettings settings;
+        settings.slots[0] = slot;
+        manager.setModulationSettings (settings);
+        manager.setModWheel (1.0f);
+        manager.noteOn (57, 1.0f); // 220 Hz
+        renderSilently (manager, 4800);
+        return findVoice (manager, 57);
+    };
+
+    {
+        VoiceManager manager;
+        const auto* voice = setUp (manager, { ModSource::modWheel, ModDestination::globalPitch, 0.5f }, sineSources());
+        CHECK (std::abs (centsBetween (voice->getOscillatorFrequency (0), 440.0)) < 0.01);
+        CHECK (std::abs (centsBetween (voice->getOscillatorFrequency (1), 440.0)) < 0.01);
+        CHECK (std::abs (centsBetween (voice->getSubFrequency(), 220.0)) < 0.01); // sub: -1 octava +1 octava
+    }
+    {
+        VoiceManager manager;
+        const auto* voice = setUp (manager, { ModSource::modWheel, ModDestination::oscBPitch, 0.5f }, sineSources());
+        CHECK (std::abs (centsBetween (voice->getOscillatorFrequency (0), 220.0)) < 0.01);
+        CHECK (std::abs (centsBetween (voice->getOscillatorFrequency (1), 440.0)) < 0.01);
+        CHECK (std::abs (centsBetween (voice->getSubFrequency(), 110.0)) < 0.01);
+    }
+    {
+        // Detune de la perilla en 0 % + 100 % desde la matriz = ±100 cents.
+        auto sources = sineSources();
+        sources.oscillators[0].unison = 3;
+        sources.oscillators[0].detune = 0.0f;
+        VoiceManager manager;
+        const auto* voice = setUp (manager, { ModSource::modWheel, ModDestination::oscADetune, 1.0f }, sources);
+        CHECK (std::abs (centsBetween (voice->getOscillator (0).getVoiceFrequency (0), 220.0) + 100.0) < 0.01);
+        CHECK (std::abs (centsBetween (voice->getOscillator (0).getVoiceFrequency (2), 220.0) - 100.0) < 0.01);
+    }
+    {
+        // Sub Level -100 % con la perilla al 75 %: el sub se calla.
+        auto sources = sineSources();
+        sources.oscillators[0].enabled = false;
+        VoiceManager manager;
+        (void) setUp (manager, { ModSource::modWheel, ModDestination::subLevel, -1.0f }, sources);
+        auto quiet = sources;
+        quiet.oscillators[1].enabled = false;
+        quiet.sub.enabled = true;
+        manager.setSourceSettings (quiet);
+        renderSilently (manager, 4800);
+        std::vector<float> signal (4800, 0.0f);
+        manager.render (signal.data(), static_cast<int> (signal.size()));
+        CHECK (rmsOf (signal) < 1.0e-6);
+    }
+}
+
+void testExtremePitchIsSafe()
+{
+    std::printf ("Tono extremo (nota 127, Octave +4, Semi +12, Global Pitch +100 %%) no se sale de la tabla\n");
+
+    // Pedirían ~1.6 MHz. Sin el tope de frecuencia, la fase avanzaba más de un ciclo por muestra y la lectura
+    // se salía de la tabla (pluginval lo encontró como un crash en su test de automatización).
+    for (const double sr : sampleRates)
+    {
+        auto sources = sineSources();
+        sources.oscillators[0].table = &factoryBank().get (0);
+        sources.oscillators[0].octave = 4;
+        sources.oscillators[0].semitones = 12;
+        sources.oscillators[0].unison = 16;
+        sources.oscillators[0].detune = 1.0f;
+        sources.sub.enabled = true;
+        VoiceManager manager;
+        prepareWithSources (manager, sr, sources);
+        ModulationSettings settings;
+        settings.slots[0] = { ModSource::modWheel, ModDestination::globalPitch, 1.0f };
+        manager.setModulationSettings (settings);
+        manager.setModWheel (1.0f);
+        manager.noteOn (127, 1.0f);
+
+        const auto out = renderStereo (manager, static_cast<int> (sr * 0.2));
+        bool finite = true;
+        for (size_t i = 0; i < out.left.size(); ++i)
+            finite = finite && std::isfinite (out.left[i]) && std::isfinite (out.right[i]) && std::abs (out.left[i]) < 10.0f;
+        CHECK (finite);
+        CHECK (findVoice (manager, 127)->getOscillatorFrequency (0) <= 0.45 * sr);
+    }
+}
+
+void testUnisonMipmapHasNoAlias()
+{
+    std::printf ("Unison: el mipmap se elige para la copia más aguda (ninguna copia se refleja)\n");
+
+    // Comprobación exacta: con detune 100 % la copia más aguda está 1 semitono por encima. Su armónico más alto
+    // debe quedar por debajo del límite (28 kHz a 48 kHz) en todo el rango de notas.
+    WavetableOscillator osc;
+    osc.setSampleRate (48000.0);
+    osc.setUnison (16, 1.0f, 0.0f, 0.0f);
+    bool allBelow = true;
+    for (double hz = 20.0; hz < 15000.0; hz *= 1.01)
+    {
+        osc.setFrequency (hz);
+        const double highest = osc.getVoiceFrequency (15);
+        if (osc.getMipLevel() < Wavetable::numLevels - 1)
+            allBelow = allBelow && Wavetable::maxHarmonicsAtLevel (osc.getMipLevel()) * highest <= 28000.0 * (1.0 + 1.0e-9);
+    }
+    CHECK (allBelow);
+
+    // En el audio: sierra con 2 copias a ±1 semitono. Todo lo que no sea armónico de una de las dos es alias.
+    double worst = -300.0;
+    for (const int note : { 72, 84, 96, 103 })
+    {
+        const double f0 = undertow::dsp::midiNoteToHz (note);
+        const double fLow = f0 * std::exp2 (-1.0 / 12.0);
+        const double fHigh = f0 * std::exp2 (1.0 / 12.0);
+        WavetableOscillator saw;
+        saw.setSampleRate (48000.0);
+        saw.setWavetable (&factoryBank().get (0));
+        saw.setPosition (2.0f / 3.0f);
+        saw.setUnison (2, 1.0f, 0.0f, 0.0f);
+        saw.setFrequency (f0);
+        saw.reset (1234);
+        std::vector<float> signal (65536);
+        for (auto& s : signal)
+            s = saw.processSample();
+
+        const auto spectrum = magnitudeSpectrum (signal);
+        const double binHz = 48000.0 / 65536.0;
+        const double strongest = *std::max_element (spectrum.begin(), spectrum.end());
+        double worstHere = 0.0;
+        for (size_t k = 1; k < spectrum.size(); ++k)
+        {
+            const double hz = static_cast<double> (k) * binHz;
+            if (hz > 20000.0)
+                break;
+            const auto nearHarmonic = [&] (double f) { return std::abs (hz - std::round (hz / f) * f) < 6.0 * binHz; };
+            if (nearHarmonic (fLow) || nearHarmonic (fHigh))
+                continue;
+            worstHere = std::max (worstHere, spectrum[k]);
+        }
+        worst = std::max (worst, toDb (worstHere / strongest));
+    }
+    std::printf ("  peor alias (sierra, 2 copias a ±1 semitono, 48 kHz): %.1f dB\n", worst);
+    CHECK (worst < -85.0);
+}
+
+void testUnisonCpuCost()
+{
+    std::printf ("Coste de CPU con unison (48 kHz)\n");
+
+    const auto measure = [] (const char* label, int notes, SourceSettings sources, bool modulated) {
+        VoiceManager manager;
+        manager.prepare (48000.0);
+        manager.setPolyphony (16);
+        manager.setSourceSettings (sources);
+        manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
+        manager.setFilterSettings ({ true, { FilterType::lowPass, FilterSlope::db24, 800.0f, 0.5f, 0.3f }, 0.5f });
+        if (modulated)
+        {
+            ModulationSettings settings;
+            settings.lfos[0] = { LfoShape::sine, LfoMode::retrigger, false, 6.0f, 5 };
+            settings.slots[0] = { ModSource::lfo1, ModDestination::filterCutoff, 0.3f };
+            settings.slots[1] = { ModSource::lfo1, ModDestination::oscADetune, 0.2f };
+            settings.slots[2] = { ModSource::env2, ModDestination::oscBPosition, 1.0f };
+            settings.slots[3] = { ModSource::lfo1, ModDestination::globalPitch, 0.01f };
+            manager.setModulationSettings (settings);
+        }
+        for (int n = 0; n < notes; ++n)
+            manager.noteOn (40 + n, 0.8f);
+
+        const int blockSize = 256;
+        const int numBlocks = 48000 * 3 / blockSize;
+        std::vector<float> left (blockSize), right (blockSize);
+        float peak = 0.0f;
+        bool finite = true;
+        const auto start = std::chrono::steady_clock::now();
+        for (int b = 0; b < numBlocks; ++b)
+        {
+            std::fill (left.begin(), left.end(), 0.0f);
+            std::fill (right.begin(), right.end(), 0.0f);
+            manager.render (left.data(), right.data(), blockSize);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                const auto s = static_cast<size_t> (i);
+                finite = finite && std::isfinite (left[s]) && std::isfinite (right[s]);
+                peak = std::max ({ peak, std::abs (left[s]), std::abs (right[s]) });
+            }
+        }
+        const double seconds = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
+        std::printf ("  %-58s %5.1f %% de un núcleo (pico %.2f)\n", label, 100.0 * seconds / 3.0, static_cast<double> (peak));
+        CHECK (finite);
+        CHECK (peak < 20.0f);
+    };
+
+    SourceSettings sources;
+    sources.subTable = &factoryBank().get (0);
+    sources.oscillators[0].table = &factoryBank().get (0);
+    sources.oscillators[0].position = 2.0f / 3.0f;
+    sources.oscillators[1].table = &factoryBank().get (4);
+
+    measure ("8 notas, Osc A sierra sin unison (referencia)", 8, sources, false);
+
+    sources.oscillators[0].unison = 7;
+    sources.oscillators[0].detune = 0.4f;
+    measure ("8 notas, supersaw: Osc A con 7 copias", 8, sources, false);
+
+    sources.oscillators[0].unison = 16;
+    sources.oscillators[1].enabled = true;
+    sources.oscillators[1].unison = 16;
+    sources.sub.enabled = true;
+    sources.noise.enabled = true;
+    measure ("16 notas, A y B con 16 copias, sub, ruido, 4 rutas (peor caso)", 16, sources, true);
+}
 } // namespace
 
 
@@ -1539,6 +2123,18 @@ int main()
     testModulationIsClickFree();
     testMipBlendIsContinuous();
     testModulationCpuCost();
+
+    testUnisonDetuneSpread();
+    testUnisonKeepsLoudness();
+    testStereoWidthAndPan();
+    testSourceChangesAreClickFree();
+    testOscillatorTuning();
+    testSubShapes();
+    testNoiseColor();
+    testPhase6Destinations();
+    testExtremePitchIsSafe();
+    testUnisonMipmapHasNoAlias();
+    testUnisonCpuCost();
 
     if (failures == 0)
         std::printf ("\nTodos los tests pasaron.\n");

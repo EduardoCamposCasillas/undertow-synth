@@ -6,18 +6,22 @@ llegar al nivel de sintes como Serum o Vital.
 
 ![Interfaz de Undertow Synth](docs/screenshot.png)
 
-> **Estado:** en desarrollo (fases 1–5 de 11 completadas). Ya suena y es usable en un DAW, pero todavía no tiene
-> segundo oscilador, efectos ni presets. Ver la [hoja de ruta](#hoja-de-ruta).
+> **Estado:** en desarrollo (fases 1–6 de 11 completadas). Ya suena y es usable en un DAW, pero todavía no tiene
+> FM, efectos ni presets. Ver la [hoja de ruta](#hoja-de-ruta).
 
 ## Qué tiene hoy
 
-- **Oscilador wavetable sin aliasing:** mipmaps por octava, interpolación cúbica y morphing continuo entre frames.
-  Tiene 5 tablas de fábrica: *Basic Shapes*, *Pulse Width*, *Harmonic Build*, *Hard Sync* y *Vowels*.
+- **Dos osciladores wavetable sin aliasing (A y B):** mipmaps por octava, interpolación cúbica y morphing continuo
+  entre frames. Tiene 5 tablas de fábrica: *Basic Shapes*, *Pulse Width*, *Harmonic Build*, *Hard Sync* y *Vowels*.
+- **Unison de hasta 16 copias por oscilador,** con detune, ancho estéreo y paneo. El volumen se mantiene al cambiar
+  el número de copias y ninguna copia produce aliasing.
+- **Sub-oscilador** (seno, triángulo, sierra o cuadrada, de 0 a −3 octavas) y **ruido** con control de color.
 - **Filtro ZDF/TPT:** Low Pass, High Pass y Band Pass de 12 o 24 dB/octava, con resonancia, drive y key tracking.
   Incluye un visor de la curva de respuesta.
 - **Modulación:** 2 envolventes extra (Env 2 y Env 3), 2 LFOs (6 formas, sincronizables al tempo, modos Free,
   Retrigger y One Shot) y una matriz de 8 rutas. Fuentes: envolventes, LFOs, velocity, nota, rueda de modulación y
-  aftertouch. Destinos: posición y tono del oscilador, cutoff, resonancia, drive y volumen.
+  aftertouch. Destinos: posición, tono, nivel y detune de cada oscilador, tono global, nivel del sub y del ruido,
+  cutoff, resonancia, drive y volumen.
 - **Polifonía de 1 a 16 voces** con robo de voces sin clics, pedal de sustain (CC64) y CC120/123.
 - **Envolvente ADSR** exponencial y sensibilidad a la velocity.
 - Correcto a 44.1, 48, 88.2 y 96 kHz y con cualquier tamaño de buffer. Validado con
@@ -79,13 +83,25 @@ En otros DAWs (Ableton, Reaper, Bitwig…) funciona igual: hay que reescanear la
 
 ### Controles
 
-**Oscilador A**
+**Pestaña Osciladores: Oscilador A y Oscilador B** (B viene apagado)
 | Control | Qué hace |
 |---|---|
+| On | Enciende o apaga el oscilador (con un fundido corto: sin clics). |
 | Wavetable | Elige la familia de timbres. Cambiarla con notas sonando no produce clics. |
 | Position | Recorre los frames de la tabla. En *Basic Shapes*: 0 % seno, 33 % triángulo, 67 % sierra y 100 % cuadrada. |
+| Octave / Semi / Fine | Afinación: ±4 octavas, ±12 semitonos y ±100 cents. |
+| Level / Pan | Volumen del oscilador y posición en el estéreo. |
+| Unison | Cuántas copias de la onda suenan a la vez (1 a 16). |
+| Detune | Cuánto se desafinan las copias entre sí (hasta ±1 semitono). Poco = coro suave; mucho = supersaw. |
+| Width | Cuánto se abren las copias hacia izquierda y derecha. |
 
-**Filtro**
+**Sub y Ruido**
+| Control | Qué hace |
+|---|---|
+| Sub: forma, Octave, Level | Un oscilador simple por debajo de la nota (mono, siempre al centro) para dar peso en los graves. |
+| Ruido: Level, Color | Ruido para aire, ataques o texturas. Color 0 % = grave y oscuro, 50 % = blanco, 100 % = solo agudos. |
+
+**Pestaña Filtro y Amp: filtro**
 | Control | Qué hace |
 |---|---|
 | On | Enciende el filtro. Viene apagado por defecto. |
@@ -132,7 +148,7 @@ diseño sonoro del proyecto. Explica qué se oye con cada control y por qué.
 Source/
   PluginProcessor.*   parámetros, estado y processBlock
   PluginEditor.*      interfaz
-  dsp/                oscilador, wavetables, filtro, envolvente, LFO y FFT (sin dependencias de JUCE)
+  dsp/                oscilador con unison, wavetables, ruido, filtro, envolvente, LFO y FFT (sin JUCE)
   synth/              voces, gestión de polifonía, matriz de modulación y banco de wavetables
   gui/                visores propios (forma de onda, curva del filtro y LFO)
 tests/                tests de DSP (ejecutable independiente, sin JUCE)
@@ -147,15 +163,18 @@ El DSP no depende de JUCE: se puede probar aislado. Dentro del hilo de audio no 
 - [x] 3 — Oscilador wavetable sin aliasing
 - [x] 4 — Filtros ZDF/TPT
 - [x] 5 — Modulación: envolventes extra, LFOs y matriz de modulación
-- [ ] 6 — Segundo oscilador, sub, ruido y unison
+- [x] 6 — Segundo oscilador, sub, ruido y unison
 - [ ] 7 — FM, ring mod y modos de warp
 - [ ] 8 — Efectos: distorsión, chorus, delay y reverb
 - [ ] 9 — Interfaz profesional
 - [ ] 10 — Presets y librería de sonidos
 - [ ] 11 — Optimización y pulido
 
-**Límite conocido:** el drive del filtro todavía no tiene oversampling. Con drive alto en notas muy agudas puede
-aparecer algo de aliasing. Se resolverá en la fase 7/8.
+**Límites conocidos:**
+- El drive del filtro todavía no tiene oversampling. Con drive alto en notas muy agudas puede aparecer algo de
+  aliasing. Se resolverá en la fase 7/8.
+- El unison es caro con todo al máximo (16 notas con los dos osciladores a 16 copias ≈ 65–80 % de un núcleo). Un
+  supersaw normal (8 notas, 7 copias) cuesta ≈ 9 %. La optimización con SIMD llega en la fase 11.
 
 ## Licencia
 

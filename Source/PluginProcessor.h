@@ -8,8 +8,8 @@
 #include "synth/VoiceManager.h"
 #include "synth/WavetableBank.h"
 
-// Fase 5: sintetizador polifónico: oscilador wavetable → filtro ZDF → envolvente ADSR de amplitud,
-// con 2 envolventes y 2 LFOs de modulación conectados mediante una matriz de 8 rutas.
+// Fase 6: sintetizador polifónico estéreo: 2 osciladores wavetable con unison + sub + ruido → filtro ZDF →
+// envolvente ADSR de amplitud, con 2 envolventes y 2 LFOs de modulación conectados mediante una matriz de 8 rutas.
 class UndertowAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -55,6 +55,7 @@ public:
     // Traduce los parámetros del filtro a la estructura del DSP. Se usa en el audio y en la GUI.
     undertow::synth::FilterSettings readFilterSettings() const noexcept;
     undertow::synth::ModulationSettings readModulationSettings() const noexcept;
+    undertow::synth::SourceSettings readSourceSettings() const noexcept;
 
     // Fase del LFO (0..1) para el punto que se mueve sobre su dibujo en la GUI.
     float getLfoDisplayPhase (int lfo) const noexcept
@@ -79,8 +80,6 @@ private:
     std::atomic<float>* voicesParam = nullptr;
     std::atomic<float>* velocityParam = nullptr;
     std::atomic<float>* masterParam = nullptr;
-    std::atomic<float>* oscAWavetableParam = nullptr;
-    std::atomic<float>* oscAPositionParam = nullptr;
     std::atomic<float>* filterOnParam = nullptr;
     std::atomic<float>* filterTypeParam = nullptr;
     std::atomic<float>* filterSlopeParam = nullptr;
@@ -110,6 +109,29 @@ private:
         std::atomic<float>* destination = nullptr;
         std::atomic<float>* amount = nullptr;
     };
+    struct OscillatorParams
+    {
+        std::atomic<float>* on = nullptr;
+        std::atomic<float>* wavetable = nullptr;
+        std::atomic<float>* position = nullptr;
+        std::atomic<float>* octave = nullptr;
+        std::atomic<float>* semitones = nullptr;
+        std::atomic<float>* fine = nullptr;
+        std::atomic<float>* level = nullptr;
+        std::atomic<float>* pan = nullptr;
+        std::atomic<float>* unison = nullptr;
+        std::atomic<float>* detune = nullptr;
+        std::atomic<float>* width = nullptr;
+    };
+    std::array<OscillatorParams, undertow::synth::numOscillators> oscillatorParams {};
+    std::atomic<float>* subOnParam = nullptr;
+    std::atomic<float>* subShapeParam = nullptr;
+    std::atomic<float>* subOctaveParam = nullptr;
+    std::atomic<float>* subLevelParam = nullptr;
+    std::atomic<float>* noiseOnParam = nullptr;
+    std::atomic<float>* noiseLevelParam = nullptr;
+    std::atomic<float>* noiseColorParam = nullptr;
+
     std::array<EnvelopeParams, 2> modEnvelopeParams {};
     std::array<LfoParams, undertow::synth::numLfos> lfoParams {};
     std::array<ModSlotParams, undertow::synth::numModSlots> modSlotParams {};
