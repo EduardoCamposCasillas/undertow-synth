@@ -173,6 +173,33 @@ UndertowAudioProcessor::UndertowAudioProcessor()
         modSlotParams[s] = { parameters.getRawParameterValue (ids.source), parameters.getRawParameterValue (ids.destination),
                              parameters.getRawParameterValue (ids.amount) };
     }
+
+    const auto get = [this] (const char* parameterId) { return parameters.getRawParameterValue (parameterId); };
+    auto& fx = effectsParams;
+    fx.distortionOn = get (id::distortionOn);
+    fx.distortionMode = get (id::distortionMode);
+    fx.distortionDrive = get (id::distortionDrive);
+    fx.distortionTone = get (id::distortionTone);
+    fx.distortionMix = get (id::distortionMix);
+    fx.chorusOn = get (id::chorusOn);
+    fx.chorusRate = get (id::chorusRate);
+    fx.chorusDepth = get (id::chorusDepth);
+    fx.chorusFeedback = get (id::chorusFeedback);
+    fx.chorusMix = get (id::chorusMix);
+    fx.delayOn = get (id::delayOn);
+    fx.delaySync = get (id::delaySync);
+    fx.delayTime = get (id::delayTime);
+    fx.delayDivision = get (id::delayDivision);
+    fx.delayFeedback = get (id::delayFeedback);
+    fx.delayPingPong = get (id::delayPingPong);
+    fx.delayTone = get (id::delayTone);
+    fx.delayMix = get (id::delayMix);
+    fx.reverbOn = get (id::reverbOn);
+    fx.reverbSize = get (id::reverbSize);
+    fx.reverbDecay = get (id::reverbDecay);
+    fx.reverbDamping = get (id::reverbDamping);
+    fx.reverbPreDelay = get (id::reverbPreDelay);
+    fx.reverbMix = get (id::reverbMix);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout UndertowAudioProcessor::createParameterLayout()
@@ -402,6 +429,76 @@ juce::AudioProcessorValueTreeState::ParameterLayout UndertowAudioProcessor::crea
                                                                  percentAttributes()));
     }
 
+    // --- Fase 8: efectos. Todos apagados por defecto: un proyecto de la Fase 7 suena igual. ---
+    constexpr int v8 = id::versionHintEffects;
+    const synth::EffectsSettings fxDefaults;
+    const auto addPercent = [&layout] (const char* parameterId, const juce::String& name, float defaultValue) {
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { parameterId, v8 }, name,
+                                                                 juce::NormalisableRange<float> (0.0f, 1.0f), defaultValue,
+                                                                 percentAttributes()));
+    };
+    const auto addToggle = [&layout] (const char* parameterId, const juce::String& name, bool defaultValue) {
+        layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { parameterId, v8 }, name, defaultValue));
+    };
+    const auto timeAttributes = [] {
+        return juce::AudioParameterFloatAttributes().withStringFromValueFunction (timeToText).withValueFromStringFunction (textToTime);
+    };
+
+    // Distorsión. El orden de los modos se guarda (índice): solo añadir al final.
+    const auto& dist = fxDefaults.distortion;
+    addToggle (id::distortionOn, "Distortion On", dist.enabled);
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id::distortionMode, v8 }, "Distortion Mode",
+                                                              toStringArray (undertow::dsp::distortionModeNames),
+                                                              static_cast<int> (dist.parameters.mode)));
+    addPercent (id::distortionDrive, "Distortion Drive", dist.parameters.drive);
+    addPercent (id::distortionTone, "Distortion Tone", dist.parameters.tone);
+    addPercent (id::distortionMix, "Distortion Mix", dist.parameters.mix);
+
+    // Chorus.
+    const auto& chorus = fxDefaults.chorus;
+    addToggle (id::chorusOn, "Chorus On", chorus.enabled);
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { id::chorusRate, v8 }, "Chorus Rate", logRange (0.05f, 8.0f), chorus.parameters.rateHz,
+        juce::AudioParameterFloatAttributes()
+            .withLabel ("Hz")
+            .withStringFromValueFunction ([] (float hz, int) { return juce::String (hz, hz < 1.0f ? 2 : 1) + " Hz"; })));
+    addPercent (id::chorusDepth, "Chorus Depth", chorus.parameters.depth);
+    addPercent (id::chorusFeedback, "Chorus Feedback", chorus.parameters.feedback);
+    addPercent (id::chorusMix, "Chorus Mix", chorus.parameters.mix);
+
+    // Delay: tiempo libre (1 ms a 2 s) o una división del compás. El orden de las divisiones se guarda.
+    const auto& delay = fxDefaults.delay;
+    addToggle (id::delayOn, "Delay On", delay.enabled);
+    addToggle (id::delaySync, "Delay Sync", delay.tempoSync);
+    juce::NormalisableRange<float> delayTimeRange (0.001f, 2.0f);
+    delayTimeRange.setSkewForCentre (0.3f);
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id::delayTime, v8 }, "Delay Time",
+                                                             delayTimeRange, delay.timeSeconds, timeAttributes()));
+    juce::StringArray delayDivisionNames;
+    for (const auto& division : synth::delayDivisions)
+        delayDivisionNames.add (division.name);
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id::delayDivision, v8 }, "Delay Division",
+                                                              delayDivisionNames, delay.division));
+    addPercent (id::delayFeedback, "Delay Feedback", delay.parameters.feedback);
+    addToggle (id::delayPingPong, "Delay Ping-Pong", delay.parameters.pingPong);
+    addPercent (id::delayTone, "Delay Tone", delay.parameters.tone);
+    addPercent (id::delayMix, "Delay Mix", delay.parameters.mix);
+
+    // Reverb.
+    const auto& reverb = fxDefaults.reverb;
+    addToggle (id::reverbOn, "Reverb On", reverb.enabled);
+    addPercent (id::reverbSize, "Reverb Size", reverb.parameters.size);
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { id::reverbDecay, v8 }, "Reverb Decay",
+        logRange (undertow::dsp::Reverb::minDecaySeconds, undertow::dsp::Reverb::maxDecaySeconds),
+        reverb.parameters.decaySeconds, timeAttributes()));
+    addPercent (id::reverbDamping, "Reverb Damping", reverb.parameters.damping);
+    juce::NormalisableRange<float> preDelayRange (0.0f, static_cast<float> (undertow::dsp::Reverb::maxPreDelaySeconds));
+    preDelayRange.setSkewForCentre (0.05f);
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id::reverbPreDelay, v8 }, "Reverb Pre-Delay",
+                                                             preDelayRange, reverb.parameters.preDelaySeconds, timeAttributes()));
+    addPercent (id::reverbMix, "Reverb Mix", reverb.parameters.mix);
+
     return layout;
 }
 
@@ -410,6 +507,11 @@ void UndertowAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerB
     currentSampleRate.store (sampleRate, std::memory_order_relaxed);
     voiceManager.prepare (sampleRate);
     updateVoiceParameters();
+
+    // Las líneas de retardo de los efectos se reservan aquí (fuera del hilo de audio).
+    effects.prepare (sampleRate);
+    effects.setSettings (readEffectsSettings(), hostBpm.load (std::memory_order_relaxed));
+    effects.snapSwitches();
 
     masterGain.reset (sampleRate, masterSmoothingSeconds);
     masterGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (masterParam->load(), minusInfinityDb));
@@ -531,6 +633,7 @@ void UndertowAudioProcessor::updateTransport() noexcept
         }
     }
     voiceManager.setTransport (transport);
+    hostBpm.store (transport.bpm, std::memory_order_relaxed);
 }
 
 undertow::synth::FilterSettings UndertowAudioProcessor::readFilterSettings() const noexcept
@@ -544,6 +647,53 @@ undertow::synth::FilterSettings UndertowAudioProcessor::readFilterSettings() con
     settings.parameters.drive = filterDriveParam->load();
     settings.keyTrack = filterKeyTrackParam->load();
     return settings;
+}
+
+undertow::synth::EffectsSettings UndertowAudioProcessor::readEffectsSettings() const noexcept
+{
+    const auto on = [] (const std::atomic<float>* parameter) { return parameter->load() >= 0.5f; };
+    const auto& p = effectsParams;
+    undertow::synth::EffectsSettings settings;
+
+    settings.distortion.enabled = on (p.distortionOn);
+    settings.distortion.parameters = { choiceToEnum<undertow::dsp::DistortionMode> (p.distortionMode), p.distortionDrive->load(),
+                                       p.distortionTone->load(), p.distortionMix->load() };
+
+    settings.chorus.enabled = on (p.chorusOn);
+    settings.chorus.parameters = { p.chorusRate->load(), p.chorusDepth->load(), p.chorusFeedback->load(), p.chorusMix->load() };
+
+    auto& delay = settings.delay;
+    delay.enabled = on (p.delayOn);
+    delay.tempoSync = on (p.delaySync);
+    delay.timeSeconds = p.delayTime->load();
+    delay.division = static_cast<int> (p.delayDivision->load());
+    delay.parameters.feedback = p.delayFeedback->load();
+    delay.parameters.pingPong = on (p.delayPingPong);
+    delay.parameters.tone = p.delayTone->load();
+    delay.parameters.mix = p.delayMix->load();
+
+    settings.reverb.enabled = on (p.reverbOn);
+    settings.reverb.parameters = { p.reverbSize->load(), p.reverbDecay->load(), p.reverbDamping->load(),
+                                   p.reverbPreDelay->load(), p.reverbMix->load() };
+    return settings;
+}
+
+double UndertowAudioProcessor::getTailLengthSeconds() const
+{
+    // Cuánto sigue sonando después de soltar la última nota: el host lo usa al exportar para no cortar la cola.
+    // Release de la voz + la cola de los efectos hasta −60 dB.
+    const auto fx = readEffectsSettings();
+    double tail = releaseParam->load();
+    if (fx.reverb.enabled)
+        tail += fx.reverb.parameters.preDelaySeconds + fx.reverb.parameters.decaySeconds;
+    if (fx.delay.enabled)
+    {
+        // Número de ecos hasta caer 60 dB: feedback^n = 10^−3.
+        const double feedback = fx.delay.parameters.feedback * undertow::dsp::StereoDelay::maxFeedback;
+        const double repeats = feedback > 0.001 ? std::min (200.0, -3.0 / std::log10 (feedback)) + 1.0 : 1.0;
+        tail += repeats * fx.delay.resolvedSeconds (hostBpm.load (std::memory_order_relaxed));
+    }
+    return tail;
 }
 
 void UndertowAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
@@ -583,6 +733,10 @@ void UndertowAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     }
 
     render (position, numSamples - position);
+
+    // Efectos globales sobre la suma de las voces, antes del volumen master.
+    effects.setSettings (readEffectsSettings(), hostBpm.load (std::memory_order_relaxed));
+    effects.process (left, right, numSamples);
 
     // Un solo SmoothedValue para los dos canales: se avanza una vez por muestra y se aplica a ambos
     // (applyGain canal por canal avanzaría el suavizado dos veces).

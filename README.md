@@ -6,8 +6,8 @@ llegar al nivel de sintes como Serum o Vital.
 
 ![Interfaz de Undertow Synth](docs/screenshot.png)
 
-> **Estado:** en desarrollo (fases 1–7 de 11 completadas). Ya suena y es usable en un DAW, pero todavía no
-> tiene efectos ni presets. Ver la [hoja de ruta](#hoja-de-ruta).
+> **Estado:** en desarrollo (fases 1–8 de 11 completadas). Ya suena y es
+> usable en un DAW, pero todavía no tiene presets. Ver la [hoja de ruta](#hoja-de-ruta).
 
 ## Qué tiene hoy
 
@@ -25,6 +25,8 @@ llegar al nivel de sintes como Serum o Vital.
   Retrigger y One Shot) y una matriz de 8 rutas. Fuentes: envolventes, LFOs, velocity, nota, rueda de modulación y
   aftertouch. Destinos: posición, tono, nivel, detune, warp y FM/RM de cada oscilador, tono global, nivel del sub y
   del ruido, cutoff, resonancia, drive y volumen.
+- **Efectos globales:** distorsión (Soft Clip, Hard Clip, Tube y Fold, con oversampling ×4 y ADAA), chorus estéreo,
+  delay estéreo o ping-pong (libre o sincronizado al tempo) y reverb algorítmica (red de 8 retardos realimentados).
 - **Polifonía de 1 a 16 voces** con robo de voces sin clics, pedal de sustain (CC64) y CC120/123.
 - **Envolvente ADSR** exponencial y sensibilidad a la velocity.
 - Correcto a 44.1, 48, 88.2 y 96 kHz y con cualquier tamaño de buffer. Validado con
@@ -142,6 +144,16 @@ oscilador trabaja a doble frecuencia de muestreo y gasta más CPU.
 | Env 2 / Env 3 | Envolventes ADSR que no mueven el volumen, sino lo que se les conecte. |
 | Matriz (8 rutas) | Fuente → destino con un amount de −100 % a +100 %. El 100 % recorre toda la perilla del destino (Cutoff: 10 octavas; Pitch: ±24 semitonos). Doble clic en la barra = 0 %. |
 
+**Pestaña Efectos** (orden fijo de la señal: distorsión → chorus → delay → reverb; todos apagados por defecto)
+| Control | Qué hace |
+|---|---|
+| Distorsión: modo | **Soft Clip:** saturación suave y cálida. **Hard Clip:** recorte duro, agresivo. **Tube:** asimétrica, añade armónicos pares (más "gorda"). **Fold:** pliega la onda sobre sí misma: timbre metálico que cambia mucho con el drive. |
+| Drive / Tone / Mix | Cuánto se empuja la señal hacia la curva (hasta +36 dB; Fold hasta +20 dB), un low-pass después (100 % = abierto) y la mezcla con la señal limpia. El volumen se compensa solo. |
+| Chorus: Rate / Depth / Feedback / Mix | Velocidad y profundidad del vaivén, realimentación (hacia flanger) y mezcla. Ensancha el estéreo. |
+| Delay: Sync / Time / Division | Tiempo del eco: libre (1 ms – 2 s) o en figuras musicales (1 compás a 1/32, con tresillos y puntillos). |
+| Delay: Ping-Pong / Feedback / Tone / Mix | Ecos que rebotan entre L y R; cuántas repeticiones; cada repetición más oscura; mezcla. |
+| Reverb: Size / Decay / Damping / Pre-Delay / Mix | Tamaño de la sala, tiempo de caída (RT60, de 0.2 a 30 s), cuánto se apagan los agudos, hueco antes de la reverb y mezcla. |
+
 Todos los parámetros se pueden automatizar desde el DAW (en FL: clic derecho → *Create automation clip*).
 
 ### Primer sonido: bajo analógico
@@ -162,8 +174,9 @@ diseño sonoro del proyecto. Explica qué se oye con cada control y por qué.
 Source/
   PluginProcessor.*   parámetros, estado y processBlock
   PluginEditor.*      interfaz
-  dsp/                oscilador con unison, warp y FM, wavetables, decimador, ruido, filtro, envolvente, LFO y FFT (sin JUCE)
-  synth/              voces, gestión de polifonía, matriz de modulación y banco de wavetables
+  dsp/                oscilador con unison, warp y FM, wavetables, oversampling halfband, ruido, filtro, envolvente, LFO,
+                      FFT y efectos: distorsión, chorus, delay y reverb (sin JUCE)
+  synth/              voces, gestión de polifonía, matriz de modulación, banco de wavetables y cadena de efectos
   gui/                visores propios (forma de onda, warp, curva del filtro y LFO)
 tests/                tests de DSP (ejecutable independiente, sin JUCE)
 ```
@@ -179,14 +192,18 @@ El DSP no depende de JUCE: se puede probar aislado. Dentro del hilo de audio no 
 - [x] 5 — Modulación: envolventes extra, LFOs y matriz de modulación
 - [x] 6 — Segundo oscilador, sub, ruido y unison
 - [x] 7 — FM, ring mod y modos de warp
-- [ ] 8 — Efectos: distorsión, chorus, delay y reverb
+- [x] 8 — Efectos: distorsión, chorus, delay y reverb
 - [ ] 9 — Interfaz profesional
 - [ ] 10 — Presets y librería de sonidos
 - [ ] 11 — Optimización y pulido
 
 **Límites conocidos:**
-- El drive del filtro todavía no tiene oversampling. Con drive alto en notas muy agudas puede aparecer algo de
-  aliasing. Se resolverá en la fase 8.
+- El drive del filtro no tiene oversampling (va por voz: sobremuestrear 16 voces sería caro). Con drive alto en notas muy
+  agudas puede aparecer algo de aliasing; para una saturación agresiva y limpia, usa la distorsión de la pestaña
+  Efectos, que sí tiene oversampling ×4. Pendiente de revisar en la fase 11 (ADAA en el drive del filtro).
+- Aliasing medido de la distorsión (seno de 0 dBFS): hasta 1.2 kHz, −67 a −92 dB; en C8 con drive 100 %, unos −55 dB
+  (Soft Clip ingenuo sin oversampling: −17 dB). Añade ~1 ms de retardo mientras está encendida.
+- Los efectos no son destinos de la matriz de modulación (la matriz es por voz y los efectos son globales).
 - El unison es caro con todo al máximo (16 notas con los dos osciladores a 16 copias ≈ 65–80 % de un núcleo). Un
   supersaw normal (8 notas, 7 copias) cuesta ≈ 9 %. Con warp o FM el oscilador cuesta de 2 a 4 veces más (8 notas con
   Sync ≈ 9 %, FM de 2 osciladores ≈ 14 %). La optimización con SIMD llega en la fase 11.

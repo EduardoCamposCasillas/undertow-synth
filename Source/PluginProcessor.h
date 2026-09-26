@@ -5,12 +5,13 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "synth/Effects.h"
 #include "synth/VoiceManager.h"
 #include "synth/WavetableBank.h"
 
-// Fase 7: sintetizador polifónico estéreo: 2 osciladores wavetable con unison, warp y FM/RM + sub + ruido →
+// Fase 8: sintetizador polifónico estéreo: 2 osciladores wavetable con unison, warp y FM/RM + sub + ruido →
 // filtro ZDF → envolvente ADSR de amplitud, con 2 envolventes y 2 LFOs de modulación conectados mediante una
-// matriz de 8 rutas.
+// matriz de 8 rutas. La suma de las voces pasa por los efectos globales: distorsión → chorus → delay → reverb.
 class UndertowAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -31,7 +32,7 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    double getTailLengthSeconds() const override;
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -57,6 +58,7 @@ public:
     undertow::synth::FilterSettings readFilterSettings() const noexcept;
     undertow::synth::ModulationSettings readModulationSettings() const noexcept;
     undertow::synth::SourceSettings readSourceSettings() const noexcept;
+    undertow::synth::EffectsSettings readEffectsSettings() const noexcept;
 
     // Fase del LFO (0..1) para el punto que se mueve sobre su dibujo en la GUI.
     float getLfoDisplayPhase (int lfo) const noexcept
@@ -145,10 +147,41 @@ private:
     std::array<LfoParams, undertow::synth::numLfos> lfoParams {};
     std::array<ModSlotParams, undertow::synth::numModSlots> modSlotParams {};
 
+    struct EffectsParams
+    {
+        std::atomic<float>* distortionOn = nullptr;
+        std::atomic<float>* distortionMode = nullptr;
+        std::atomic<float>* distortionDrive = nullptr;
+        std::atomic<float>* distortionTone = nullptr;
+        std::atomic<float>* distortionMix = nullptr;
+        std::atomic<float>* chorusOn = nullptr;
+        std::atomic<float>* chorusRate = nullptr;
+        std::atomic<float>* chorusDepth = nullptr;
+        std::atomic<float>* chorusFeedback = nullptr;
+        std::atomic<float>* chorusMix = nullptr;
+        std::atomic<float>* delayOn = nullptr;
+        std::atomic<float>* delaySync = nullptr;
+        std::atomic<float>* delayTime = nullptr;
+        std::atomic<float>* delayDivision = nullptr;
+        std::atomic<float>* delayFeedback = nullptr;
+        std::atomic<float>* delayPingPong = nullptr;
+        std::atomic<float>* delayTone = nullptr;
+        std::atomic<float>* delayMix = nullptr;
+        std::atomic<float>* reverbOn = nullptr;
+        std::atomic<float>* reverbSize = nullptr;
+        std::atomic<float>* reverbDecay = nullptr;
+        std::atomic<float>* reverbDamping = nullptr;
+        std::atomic<float>* reverbPreDelay = nullptr;
+        std::atomic<float>* reverbMix = nullptr;
+    };
+    EffectsParams effectsParams;
+
     // Un solo banco para todas las instancias del plugin: se crea con la primera y se libera con la última.
     juce::SharedResourcePointer<undertow::synth::WavetableBank> wavetableBank;
 
     undertow::synth::VoiceManager voiceManager;
+    undertow::synth::EffectsChain effects;
+    std::atomic<double> hostBpm { 120.0 }; // lo lee también getTailLengthSeconds (hilo de mensajes)
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> masterGain;
     std::atomic<int> activeVoiceCount { 0 };
     std::atomic<double> currentSampleRate { 48000.0 };

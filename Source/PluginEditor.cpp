@@ -16,6 +16,9 @@ constexpr int lfoRateWidth = 84;
 constexpr int matrixRowHeight = 30;
 constexpr int oscillatorColumnWidth = 150; // On, tabla y visor de la forma de onda
 constexpr int oscillatorKnobWidth = 72;    // 9 perillas por oscilador: un poco más estrechas que las demás
+constexpr int tabWidth = 96;
+constexpr int effectColumnWidth = 130;     // On (y selectores) de cada efecto
+constexpr int chorusColumnWidth = 80;      // el chorus solo tiene On: deja sitio a sus 4 perillas
 
 // El ancho lo marca la fila del filtro: opciones + 4 perillas + un visor de 280 px (igual que en la Fase 4).
 constexpr int pageWidth = 2 * groupPadding + wavetableColumnWidth + 4 * knobWidth + filterDisplayWidth;
@@ -46,7 +49,7 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
     // --- Pestañas ---
     // Los literales con tildes se pasan con fromUTF8: un const char* suelto JUCE lo lee como Latin-1.
     modulationTab.setButtonText (juce::String::fromUTF8 ("Modulaci\xc3\xb3n"));
-    for (auto* tab : { &oscillatorTab, &warpTab, &soundTab, &modulationTab })
+    for (auto* tab : { &oscillatorTab, &warpTab, &soundTab, &modulationTab, &effectsTab })
     {
         tab->setClickingTogglesState (true);
         tab->setRadioGroupId (1);
@@ -57,10 +60,12 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
     warpTab.onClick = [this] { showPage (Page::warp); };
     soundTab.onClick = [this] { showPage (Page::sound); };
     modulationTab.onClick = [this] { showPage (Page::modulation); };
+    effectsTab.onClick = [this] { showPage (Page::effects); };
     addChildComponent (oscillatorPage);
     addChildComponent (warpPage);
     addChildComponent (soundPage);
     addChildComponent (modulationPage);
+    addChildComponent (effectsPage);
 
     // ================= Página "Osciladores": Osc A, Osc B, sub y ruido =================
     for (size_t o = 0; o < oscillators.size(); ++o)
@@ -216,6 +221,51 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
         slot.amountAttachment = std::make_unique<SliderAttachment> (apvts, ids.amount, slot.amount);
     }
 
+    // ================= Página "Efectos": distorsión | chorus, delay, reverb =================
+    const auto setUpEffectGroup = [this, &apvts] (EffectGroup& fx, const juce::String& title, const char* onId) {
+        fx.group.setText (title);
+        effectsPage.addAndMakeVisible (fx.group);
+        effectsPage.addAndMakeVisible (fx.onButton);
+        fx.onAttachment = std::make_unique<ButtonAttachment> (apvts, onId, fx.onButton);
+    };
+    setUpEffectGroup (distortionGroup, juce::String::fromUTF8 ("Distorsi\xc3\xb3n"), id::distortionOn);
+    setUpEffectGroup (chorusGroup, "Chorus", id::chorusOn);
+    setUpEffectGroup (delayGroup, "Delay", id::delayOn);
+    setUpEffectGroup (reverbGroup, "Reverb", id::reverbOn);
+
+    setUpComboBox (distortionModeBox, effectsPage, id::distortionMode, distortionModeAttachment);
+    const std::array<KnobInfo, 3> distortionInfos { { { id::distortionDrive, "Drive" }, { id::distortionTone, "Tone" },
+                                                      { id::distortionMix, "Mix" } } };
+    for (size_t k = 0; k < distortionKnobs.size(); ++k)
+        setUpKnob (distortionKnobs[k], effectsPage, distortionInfos[k].parameterId, distortionInfos[k].name, oscillatorKnobWidth);
+
+    const std::array<KnobInfo, 4> chorusInfos { { { id::chorusRate, "Rate" }, { id::chorusDepth, "Depth" },
+                                                  { id::chorusFeedback, "Feedback" }, { id::chorusMix, "Mix" } } };
+    for (size_t k = 0; k < chorusKnobs.size(); ++k)
+        setUpKnob (chorusKnobs[k], effectsPage, chorusInfos[k].parameterId, chorusInfos[k].name, oscillatorKnobWidth);
+
+    // Delay: como en los LFO, Time (ms) y Division (tempo) ocupan el mismo sitio y el timer muestra uno u otro.
+    effectsPage.addAndMakeVisible (delaySyncButton);
+    delaySyncAttachment = std::make_unique<ButtonAttachment> (apvts, id::delaySync, delaySyncButton);
+    effectsPage.addAndMakeVisible (delayPingPongButton);
+    delayPingPongAttachment = std::make_unique<ButtonAttachment> (apvts, id::delayPingPong, delayPingPongButton);
+    setUpKnob (delayTimeKnob, effectsPage, id::delayTime, "Time", knobWidth);
+    delayDivisionLabel.setText ("Division", juce::dontSendNotification);
+    delayDivisionLabel.setJustificationType (juce::Justification::centred);
+    effectsPage.addChildComponent (delayDivisionLabel);
+    setUpComboBox (delayDivisionBox, effectsPage, id::delayDivision, delayDivisionAttachment);
+    delaySyncParam = apvts.getRawParameterValue (id::delaySync);
+    const std::array<KnobInfo, 3> delayInfos { { { id::delayFeedback, "Feedback" }, { id::delayTone, "Tone" },
+                                                 { id::delayMix, "Mix" } } };
+    for (size_t k = 0; k < delayKnobs.size(); ++k)
+        setUpKnob (delayKnobs[k], effectsPage, delayInfos[k].parameterId, delayInfos[k].name, knobWidth);
+
+    const std::array<KnobInfo, 5> reverbInfos { { { id::reverbSize, "Size" }, { id::reverbDecay, "Decay" },
+                                                  { id::reverbDamping, "Damping" }, { id::reverbPreDelay, "Pre-Delay" },
+                                                  { id::reverbMix, "Mix" } } };
+    for (size_t k = 0; k < reverbKnobs.size(); ++k)
+        setUpKnob (reverbKnobs[k], effectsPage, reverbInfos[k].parameterId, reverbInfos[k].name, knobWidth);
+
     activeVoicesLabel.setJustificationType (juce::Justification::centredRight);
     activeVoicesLabel.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
     addAndMakeVisible (activeVoicesLabel);
@@ -240,6 +290,7 @@ void UndertowAudioProcessorEditor::showPage (Page page)
     warpPage.setVisible (page == Page::warp);
     soundPage.setVisible (page == Page::sound);
     modulationPage.setVisible (page == Page::modulation);
+    effectsPage.setVisible (page == Page::effects);
 }
 
 void UndertowAudioProcessorEditor::setUpKnob (Knob& knob, juce::Component& page, const char* parameterId,
@@ -312,6 +363,12 @@ void UndertowAudioProcessorEditor::timerCallback()
         lfo.display.setState (static_cast<undertow::dsp::LfoShape> (static_cast<int> (lfo.shapeParam->load())),
                               processor.getLfoDisplayPhase (static_cast<int> (l)));
     }
+
+    const bool delaySynced = delaySyncParam->load() >= 0.5f;
+    delayTimeKnob.slider.setVisible (! delaySynced);
+    delayTimeKnob.label.setVisible (! delaySynced);
+    delayDivisionBox.setVisible (delaySynced);
+    delayDivisionLabel.setVisible (delaySynced);
 }
 
 void UndertowAudioProcessorEditor::paint (juce::Graphics& g)
@@ -328,18 +385,20 @@ void UndertowAudioProcessorEditor::resized()
 {
     auto area = getLocalBounds().reduced (groupPadding);
     auto header = area.removeFromTop (headerHeight);
-    activeVoicesLabel.setBounds (header.removeFromRight (170));
+    activeVoicesLabel.setBounds (header.removeFromRight (140));
     header.removeFromRight (groupPadding);
-    modulationTab.setBounds (header.removeFromRight (110).reduced (0, 2));
-    soundTab.setBounds (header.removeFromRight (110).reduced (0, 2));
-    warpTab.setBounds (header.removeFromRight (110).reduced (0, 2));
-    oscillatorTab.setBounds (header.removeFromRight (110).reduced (0, 2));
+    effectsTab.setBounds (header.removeFromRight (tabWidth).reduced (0, 2));
+    modulationTab.setBounds (header.removeFromRight (tabWidth).reduced (0, 2));
+    soundTab.setBounds (header.removeFromRight (tabWidth).reduced (0, 2));
+    warpTab.setBounds (header.removeFromRight (tabWidth).reduced (0, 2));
+    oscillatorTab.setBounds (header.removeFromRight (tabWidth).reduced (0, 2));
     area.removeFromTop (groupPadding);
 
     oscillatorPage.setBounds (area);
     warpPage.setBounds (area);
     soundPage.setBounds (area);
     modulationPage.setBounds (area);
+    effectsPage.setBounds (area);
 
     const auto innerOf = [] (juce::Rectangle<int> groupArea) {
         return groupArea.reduced (groupPadding, 0).withTrimmedTop (22).withTrimmedBottom (groupPadding);
@@ -526,6 +585,59 @@ void UndertowAudioProcessorEditor::resized()
             slot.destinationBox.setBounds (line.removeFromLeft (128));
             line.removeFromLeft (4);
             slot.amount.setBounds (line);
+        }
+    }
+
+    // ================= Página "Efectos" =================
+    // Fila 1: Distorsión | Chorus. Filas 2 y 3: Delay y Reverb a todo el ancho. En cada grupo, una columna con
+    // On (y sus opciones) y después las perillas, en el orden de la cadena de señal.
+    {
+        auto page = effectsPage.getLocalBounds();
+        const auto startGroup = [&innerOf] (EffectGroup& fx, juce::Rectangle<int> groupArea,
+                                            int columnWidth = effectColumnWidth) {
+            fx.group.setBounds (groupArea);
+            auto inner = innerOf (groupArea);
+            auto column = inner.removeFromLeft (columnWidth);
+            fx.onButton.setBounds (column.removeFromTop (24));
+            column.removeFromTop (6);
+            return std::pair { inner, column };
+        };
+
+        auto row = page.removeFromTop (rowHeight);
+        page.removeFromTop (groupPadding);
+        const int halfWidth = (row.getWidth() - groupPadding) / 2;
+        {
+            auto [inner, column] = startGroup (distortionGroup, row.removeFromLeft (halfWidth), effectColumnWidth - 20);
+            distortionModeBox.setBounds (column.removeFromTop (26).withTrimmedRight (8));
+            for (auto& knob : distortionKnobs)
+                layoutKnob (knob, inner.removeFromLeft (oscillatorKnobWidth));
+        }
+        row.removeFromLeft (groupPadding);
+        {
+            auto [inner, column] = startGroup (chorusGroup, row, chorusColumnWidth);
+            for (auto& knob : chorusKnobs)
+                layoutKnob (knob, inner.removeFromLeft (oscillatorKnobWidth));
+        }
+
+        {
+            auto [inner, column] = startGroup (delayGroup, page.removeFromTop (rowHeight));
+            page.removeFromTop (groupPadding);
+            delaySyncButton.setBounds (column.removeFromTop (24));
+            column.removeFromTop (6);
+            delayPingPongButton.setBounds (column.removeFromTop (24));
+
+            auto timeColumn = inner.removeFromLeft (knobWidth).withTrimmedLeft (4);
+            layoutKnob (delayTimeKnob, timeColumn);
+            delayDivisionLabel.setBounds (timeColumn.removeFromTop (20));
+            delayDivisionBox.setBounds (timeColumn.removeFromTop (28));
+            for (auto& knob : delayKnobs)
+                layoutKnob (knob, inner.removeFromLeft (knobWidth));
+        }
+
+        {
+            auto [inner, column] = startGroup (reverbGroup, page.removeFromTop (rowHeight));
+            for (auto& knob : reverbKnobs)
+                layoutKnob (knob, inner.removeFromLeft (knobWidth));
         }
     }
 }

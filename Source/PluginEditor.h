@@ -15,7 +15,7 @@
 
 class UndertowAudioProcessor;
 
-// GUI funcional: osciladores, warp y FM, sub, ruido, filtro, envolventes, LFOs, matriz de modulación y voz.
+// GUI funcional: osciladores, warp y FM, sub, ruido, filtro, envolventes, LFOs, matriz de modulación, voz y efectos.
 // La GUI profesional (escalable, arrastrar para modular) llega en la Fase 9.
 class UndertowAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
@@ -27,7 +27,7 @@ public:
     void resized() override;
 
 private:
-    enum class Page { oscillators, warp, sound, modulation };
+    enum class Page { oscillators, warp, sound, modulation, effects };
 
     void timerCallback() override;
     void showPage (Page page);
@@ -56,11 +56,12 @@ private:
     UndertowAudioProcessor& processor;
 
     // Cuatro páginas del mismo tamaño que la ventana de la Fase 4 (cabe en pantallas pequeñas con escalado).
-    juce::Component oscillatorPage, warpPage, soundPage, modulationPage;
+    juce::Component oscillatorPage, warpPage, soundPage, modulationPage, effectsPage;
     juce::TextButton oscillatorTab { "Osciladores" };
     juce::TextButton warpTab { "Warp y FM" };
     juce::TextButton soundTab { "Filtro y Amp" };
     juce::TextButton modulationTab;
+    juce::TextButton effectsTab { "Efectos" };
     std::array<Knob, numEnvelopeKnobs + numVoiceKnobs> knobs;
 
     // --- Fase 6: osciladores A y B, sub y ruido ---
@@ -157,6 +158,32 @@ private:
     };
     juce::GroupComponent matrixGroup { {}, "Matriz de modulación" };
     std::array<ModSlotControls, undertow::synth::numModSlots> modSlots;
+
+    // --- Fase 8: efectos ---
+    struct EffectGroup
+    {
+        juce::GroupComponent group;
+        juce::ToggleButton onButton { "On" };
+        std::unique_ptr<ButtonAttachment> onAttachment;
+    };
+    EffectGroup distortionGroup, chorusGroup, delayGroup, reverbGroup;
+
+    juce::ComboBox distortionModeBox;
+    std::unique_ptr<ComboBoxAttachment> distortionModeAttachment;
+    std::array<Knob, 3> distortionKnobs; // Drive, Tone, Mix
+    std::array<Knob, 4> chorusKnobs;     // Rate, Depth, Feedback, Mix
+
+    juce::ToggleButton delaySyncButton { "Sync (tempo)" };
+    juce::ToggleButton delayPingPongButton { "Ping-Pong" };
+    std::unique_ptr<ButtonAttachment> delaySyncAttachment, delayPingPongAttachment;
+    Knob delayTimeKnob;
+    juce::Label delayDivisionLabel;
+    juce::ComboBox delayDivisionBox;
+    std::unique_ptr<ComboBoxAttachment> delayDivisionAttachment;
+    std::array<Knob, 3> delayKnobs;  // Feedback, Tone, Mix
+    std::atomic<float>* delaySyncParam = nullptr;
+
+    std::array<Knob, 5> reverbKnobs; // Size, Decay, Damping, Pre-Delay, Mix
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UndertowAudioProcessorEditor)
 };

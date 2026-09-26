@@ -119,6 +119,35 @@ inline constexpr std::array<OscillatorWarpIds, 2> oscillatorWarps { {
     { "oscBWarpMode", "oscBWarpAmount", "oscBFmMode", "oscBFmAmount" },
 } };
 
+// Fase 8: efectos globales (distorsión → chorus → delay → reverb).
+inline constexpr const char* distortionOn = "fxDistOn";
+inline constexpr const char* distortionMode = "fxDistMode";
+inline constexpr const char* distortionDrive = "fxDistDrive";
+inline constexpr const char* distortionTone = "fxDistTone";
+inline constexpr const char* distortionMix = "fxDistMix";
+
+inline constexpr const char* chorusOn = "fxChorusOn";
+inline constexpr const char* chorusRate = "fxChorusRate";
+inline constexpr const char* chorusDepth = "fxChorusDepth";
+inline constexpr const char* chorusFeedback = "fxChorusFeedback";
+inline constexpr const char* chorusMix = "fxChorusMix";
+
+inline constexpr const char* delayOn = "fxDelayOn";
+inline constexpr const char* delaySync = "fxDelaySync";
+inline constexpr const char* delayTime = "fxDelayTime";
+inline constexpr const char* delayDivision = "fxDelayDivision";
+inline constexpr const char* delayFeedback = "fxDelayFeedback";
+inline constexpr const char* delayPingPong = "fxDelayPingPong";
+inline constexpr const char* delayTone = "fxDelayTone";
+inline constexpr const char* delayMix = "fxDelayMix";
+
+inline constexpr const char* reverbOn = "fxReverbOn";
+inline constexpr const char* reverbSize = "fxReverbSize";
+inline constexpr const char* reverbDecay = "fxReverbDecay";
+inline constexpr const char* reverbDamping = "fxReverbDamping";
+inline constexpr const char* reverbPreDelay = "fxReverbPreDelay";
+inline constexpr const char* reverbMix = "fxReverbMix";
+
 // Versión con la que se introdujeron los parámetros (la usa VST3 para compatibilidad hacia atrás).
 inline constexpr int versionHint = 1;
 // Los parámetros añadidos en una versión posterior llevan un número mayor.
@@ -127,4 +156,5 @@ inline constexpr int versionHintFilter = 3;
 inline constexpr int versionHintModulation = 4;
 inline constexpr int versionHintSources = 5;
 inline constexpr int versionHintWarp = 6;
+inline constexpr int versionHintEffects = 7;
 } // namespace undertow::params

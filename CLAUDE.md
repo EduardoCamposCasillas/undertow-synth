@@ -98,7 +98,7 @@ Source/
 - [x] Fase 7 — FM y warp de osciladores: FM/PM entre osciladores (OSC B → OSC A, ruido → OSC, sub → OSC),
       ring mod, y modos de warp (bend, sync, PWM, mirror, quantize/bitcrush). Todo modulable desde la matriz
       y con control de aliasing (oversampling o técnicas band-limited donde haga falta).
-- [ ] Fase 8 — Efectos internos: distorsión (con oversampling), chorus, delay, reverb.
+- [x] Fase 8 — Efectos internos: distorsión (con oversampling), chorus, delay, reverb.
 - [ ] Fase 9 — GUI profesional: visualización del wavetable (mostrando el warp aplicado), arrastrar para modular, escalable.
 - [ ] Fase 10 — Presets: guardado/carga, navegador, librería inicial de sonidos.
 - [ ] Fase 11 — Pulido: optimización de CPU (SIMD), pluginval estricto, comparación contra referencias.
@@ -273,4 +273,43 @@ Fase 7 COMPLETADA (2026-09-25). Probada por el usuario en FL Studio: funciona.
   más cortos que una muestra cerca del salto); C8 con amounts extremos (−53 a −79 dB). El camino con warp/FM cuesta 2–4×
   (SIMD en Fase 11). El drive del filtro sigue sin oversampling (Fase 8).
 
-Siguiente: Fase 8 (efectos), pendiente de que el usuario la inicie.
+Fase 8 COMPLETADA (2026-09-25). Probada por el usuario en FL Studio: suena bien.
+- Efectos GLOBALES (sobre la suma de voces, antes del master), orden fijo: distorsión → chorus → delay → reverb.
+  `synth/Effects.h`: `EffectsSettings` y `EffectsChain` (sin JUCE). On/off con fundido de 10 ms; apagado y con el fundido
+  terminado no se procesa; al volver a encender se vacía el efecto (`reset (true)`: la señal que entra a las líneas sube
+  en 10 ms, si no la primera repetición empieza con un corte = clic). Todo apagado = señal intacta bit a bit.
+- `dsp/HalfbandDecimator.h`: `HalfbandDesign` (coeficientes compartidos) + `HalfbandInterpolator` (polifásico, ±0.0001 dB,
+  imagen −98 a −117 dB). `dsp/DelayLine.h`: `DelayLine` (potencia de 2, lectura entera, lineal y Catmull-Rom),
+  `SmoothedParameter`, `EffectSwitch`.
+- `dsp/Distortion.h`: oversampling ×4 (2 interpoladores + 2 decimadores halfband; retardo 1.7 ms a 44.1, 0.9 ms a 48 kHz) +
+  ADAA de 1.er orden (en double, sobre la señal ANTES del drive: F(g·u)/g). `DistortionMode` (orden guardado): Soft Clip,
+  Hard Clip, Tube (tanh con bias 0.3: armónicos pares), Fold (sin). Drive 0..+36 dB (Fold 0..+20 dB: más no cabe en
+  ningún oversampling). Makeup = 0.25 / tanh(0.25·g) (una señal de −12 dBFS conserva el pico; volumen −0.7..+2.9 dB).
+  Tone = LP 12 dB 400 Hz–40 kHz a 4×; DC blocker 5 Hz; Mix DENTRO del dominio 4× (la señal limpia llega con el mismo
+  retardo). Cambio de modo = fundido de 10 ms calculando las dos curvas. OJO: `down1.process (down2.process (a),
+  down2.process (b))` era un bug (orden de evaluación de argumentos no especificado en C++; MSVC evalúa de derecha a izq.).
+- `dsp/Chorus.h`: una copia por canal, retardo 10 ms ± 7 ms (depth), LFO seno con el derecho invertido (180°), Catmull-Rom,
+  feedback hasta 90 %. `dsp/StereoDelay.h`: hasta 4 s, tiempo redondeado a muestras enteras, cambio de tiempo = fundido de
+  50 ms entre dos lecturas (estilo "digital", sin desafinar), Tone = LP 1 polo en el lazo (500 Hz–20 kHz; 100 % = sin
+  filtro), feedback hasta 95 %, ping-pong mezclado con estéreo por un valor suavizado (cambiarlo no hace clic).
+  `dsp/Reverb.h`: pre-delay (0–250 ms) → 4 all-pass por canal (difusión 0.65) → FDN de 8 líneas (29.7–73.3 ms × Size 0.4..1.6,
+  matriz Householder, ganancia por línea = 10^(−3·L/(RT60·sr)), damping LP 1 polo 20 kHz → 1 kHz, oscilación ±0.3 ms con
+  lectura lineal) → salida con dos filas de Hadamard (L/R decorrelados).
+- Parámetros nuevos (versionHint 7; IDs en `Parameters.h`): fxDistOn/Mode/Drive/Tone/Mix; fxChorusOn/Rate (0.05–8 Hz)/Depth/
+  Feedback/Mix; fxDelayOn/Sync/Time (1 ms–2 s)/Division/Feedback/PingPong/Tone/Mix; fxReverbOn/Size/Decay (0.2–30 s)/
+  Damping/PreDelay/Mix. `delayDivisions` (14, orden guardado; por defecto 1/8 D). Todo apagado por defecto: un proyecto de
+  la Fase 7 suena igual. `getTailLengthSeconds()` = release + cola de reverb y delay (hasta −60 dB). `hostBpm` atómico.
+- GUI: pestaña "Efectos" (Distorsión | Chorus; Delay; Reverb). 5 pestañas de 96 px; mismo tamaño de ventana (870×602).
+- Tests (12 nuevos; `UndertowTests --fase8`): interpolador; distorsión con Mix 0 transparente (±0.0003 dB); armónicos
+  (simétricas: pares < −150 dB; Tube: 2.º −20 dB); alias hasta 1.2 kHz −67 a −92 dB, peor caso C8 a 0 dBFS −55 dB
+  (ingenuo −17 dB); volumen compensado; cambios sin clics; chorus (retardo exacto, correlación L/R 0.00); ecos exactos
+  (muestra y nivel), ping-pong y sync; cambios de tiempo sin clics; RT60 medido (banda < 1 kHz) −5 % del Decay a 4 sample
+  rates; pre-delay; L/R de la cola decorrelados; estabilidad al máximo; cadena intacta apagada y sin clics al conmutar.
+  CPU (48 kHz): distorsión ≈ 3 %, chorus 0.15 %, delay 0.04 %, reverb 0.6 %; los cuatro ≈ 4 % de un núcleo.
+- Release con 0 warnings (build limpio en `out/pv`); pluginval strictness 10: SUCCESS (compilado en `out/pv` porque FL
+  tenía abierto el VST3 de `build/`).
+- Límites conocidos: el drive del filtro sigue sin oversampling (es por voz; la distorsión global sí lo tiene; revisar ADAA
+  en Fase 11). Los efectos no son destinos de la matriz (es por voz). La distorsión añade ~1 ms de retardo (no se
+  informa como latencia al host). Orden de efectos fijo.
+
+Siguiente: Fase 9 (GUI profesional), pendiente de que el usuario la inicie.

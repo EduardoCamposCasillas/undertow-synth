@@ -24,20 +24,22 @@ namespace undertow::dsp
 // Se diseña con el método de la ventana: la respuesta ideal (un sinc) recortada con una ventana de Kaiser, que
 // permite elegir la atenuación (aquí 100 dB) y calcula la longitud necesaria. FIR = fase lineal: todas las
 // frecuencias llegan con el mismo retardo (unas 35 muestras a 44.1 kHz, 0.8 ms), sin deformar la onda.
-class HalfbandDecimator
+
+// Coeficientes de un halfband para una frecuencia "baja" dada (la del host, o la intermedia de un oversampling
+// ×4). Los comparten el decimador y el interpolador (Fase 8).
+struct HalfbandDesign
 {
-public:
     // Hasta dónde se conserva todo intacto: 20 kHz, o un poco menos si el host trabaja por debajo de 44.1 kHz.
-    [[nodiscard]] static double passbandEdge (double outputSampleRate) noexcept
+    [[nodiscard]] static double passbandEdge (double lowSampleRate) noexcept
     {
-        return std::min (20000.0, 0.4535 * outputSampleRate);
+        return std::min (20000.0, 0.4535 * lowSampleRate);
     }
 
     // Se llama fuera del hilo de audio (prepareToPlay): calcula los coeficientes para esta frecuencia.
-    void prepare (double outputSampleRate) noexcept
+    void design (double lowSampleRate) noexcept
     {
-        const double oversampledRate = 2.0 * outputSampleRate;
-        const double transitionHz = outputSampleRate - 2.0 * passbandEdge (outputSampleRate);
+        const double oversampledRate = 2.0 * lowSampleRate;
+        const double transitionHz = lowSampleRate - 2.0 * passbandEdge (lowSampleRate);
         const double transition = 2.0 * std::numbers::pi * transitionHz / oversampledRate; // en radianes/muestra
 
         // Fórmulas de Kaiser: longitud y "beta" para la atenuación pedida.
@@ -57,6 +59,43 @@ public:
             const double window = besselI0 (beta * std::sqrt (1.0 - ratio * ratio)) / besselI0 (beta);
             coefficients[static_cast<size_t> (i)] = static_cast<float> (ideal * window);
         }
+    }
+
+    // Función de Bessel modificada de orden 0 (la de la ventana de Kaiser), por su serie de potencias.
+    [[nodiscard]] static double besselI0 (double x) noexcept
+    {
+        double sum = 1.0, term = 1.0;
+        for (int k = 1; k < 50; ++k)
+        {
+            term *= (x / (2.0 * k)) * (x / (2.0 * k));
+            sum += term;
+            if (term < sum * 1.0e-12)
+                break;
+        }
+        return sum;
+    }
+
+    static constexpr double attenuationDb = 100.0;
+    // 44.1 kHz es el caso más exigente (transición de 20 a 24.1 kHz): unos 69 taps a cada lado del central.
+    static constexpr int maxHalfLength = 75;
+
+    std::array<float, (maxHalfLength + 1) / 2> coefficients {};
+    int numCoefficients = 1;
+    int halfLength = 1; // distancia (impar) del tap no nulo más lejano al central
+};
+
+class HalfbandDecimator
+{
+public:
+    [[nodiscard]] static double passbandEdge (double outputSampleRate) noexcept
+    {
+        return HalfbandDesign::passbandEdge (outputSampleRate);
+    }
+
+    // Se llama fuera del hilo de audio (prepareToPlay): calcula los coeficientes para esta frecuencia.
+    void prepare (double outputSampleRate) noexcept
+    {
+        filter.design (outputSampleRate);
         reset();
     }
 
@@ -74,12 +113,12 @@ public:
 
         // Doble escritura en el buffer circular: las últimas N muestras están siempre seguidas en memoria.
         const float* newest = history.data() + writeIndex + bufferSize - 1;
-        const float* centre = newest - halfLength;
+        const float* centre = newest - filter.halfLength;
         float sum = 0.5f * centre[0];
-        for (int i = 0; i < numCoefficients; ++i)
+        for (int i = 0; i < filter.numCoefficients; ++i)
         {
             const int j = 2 * i + 1;
-            sum += coefficients[static_cast<size_t> (i)] * (centre[-j] + centre[j]);
+            sum += filter.coefficients[static_cast<size_t> (i)] * (centre[-j] + centre[j]);
         }
         return sum;
     }
@@ -92,10 +131,10 @@ public:
     }
 
     // Retardo en muestras de salida (la mitad de la longitud del filtro, en muestras sobremuestreadas / 2).
-    [[nodiscard]] double getLatency() const noexcept { return 0.5 * halfLength; }
-    [[nodiscard]] int getNumTaps() const noexcept { return 2 * halfLength + 1; }
+    [[nodiscard]] double getLatency() const noexcept { return 0.5 * filter.halfLength; }
+    [[nodiscard]] int getNumTaps() const noexcept { return 2 * filter.halfLength + 1; }
 
-    static constexpr double attenuationDb = 100.0;
+    static constexpr double attenuationDb = HalfbandDesign::attenuationDb;
 
 private:
     void push (float sample) noexcept
@@ -105,27 +144,65 @@ private:
         writeIndex = (writeIndex + 1) & (bufferSize - 1);
     }
 
-    // Función de Bessel modificada de orden 0 (la de la ventana de Kaiser), por su serie de potencias.
-    [[nodiscard]] static double besselI0 (double x) noexcept
-    {
-        double sum = 1.0, term = 1.0;
-        for (int k = 1; k < 50; ++k)
-        {
-            term *= (x / (2.0 * k)) * (x / (2.0 * k));
-            sum += term;
-            if (term < sum * 1.0e-12)
-                break;
-        }
-        return sum;
-    }
-
-    // 44.1 kHz es el caso más exigente (transición de 20 a 24.1 kHz): unos 69 taps a cada lado del central.
-    static constexpr int maxHalfLength = 75;
     static constexpr int bufferSize = 256; // potencia de 2 mayor que la longitud del filtro
 
-    std::array<float, (maxHalfLength + 1) / 2> coefficients {};
-    int numCoefficients = 1;
-    int halfLength = 1;
+    HalfbandDesign filter;
+    std::array<float, 2 * bufferSize> history {};
+    int writeIndex = 0;
+};
+
+// Interpolador ×2 (Fase 8): lo contrario del decimador. Para calcular a 2·sr una señal que llega a sr, se
+// intercala un cero entre cada par de muestras (eso duplica la frecuencia de muestreo, pero crea una "imagen"
+// espejo del espectro por encima de sr/2) y se borra esa imagen con el MISMO low-pass halfband, con ganancia 2
+// para compensar los ceros.
+//
+// Truco polifásico: como la mitad de las muestras que entran al filtro son ceros y la mitad de los coeficientes
+// también, cada muestra de salida usa solo una de las dos mitades. Una sale del tap central (es la muestra
+// original, retrasada) y la otra de los taps impares (la muestra "nueva", interpolada entre las originales).
+class HalfbandInterpolator
+{
+public:
+    // 'inputSampleRate' es la frecuencia BAJA (la de entrada).
+    void prepare (double inputSampleRate) noexcept
+    {
+        filter.design (inputSampleRate);
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        history.fill (0.0f);
+        writeIndex = 0;
+    }
+
+    // Recibe una muestra y escribe dos a la frecuencia doble (primero la más antigua).
+    void process (float input, float& first, float& second) noexcept
+    {
+        history[static_cast<size_t> (writeIndex)] = input;
+        history[static_cast<size_t> (writeIndex + bufferSize)] = input;
+        writeIndex = (writeIndex + 1) & (bufferSize - 1);
+
+        // newest[-a] = x[n − a]. Con H = halfLength (impar), la muestra nueva combina las parejas
+        // x[n − (H ± j)/2] y la original es x[n − (H − 1)/2].
+        const float* newest = history.data() + writeIndex + bufferSize - 1;
+        const int h = filter.halfLength;
+        float sum = 0.0f;
+        for (int i = 0; i < filter.numCoefficients; ++i)
+        {
+            const int j = 2 * i + 1;
+            sum += filter.coefficients[static_cast<size_t> (i)] * (newest[-(h + j) / 2] + newest[-(h - j) / 2]);
+        }
+        first = 2.0f * sum;
+        second = newest[-(h - 1) / 2];
+    }
+
+    // Retardo en muestras de ENTRADA: H muestras a la frecuencia doble.
+    [[nodiscard]] double getLatency() const noexcept { return 0.5 * filter.halfLength; }
+
+private:
+    static constexpr int bufferSize = 128; // potencia de 2 mayor que H + 1
+
+    HalfbandDesign filter;
     std::array<float, 2 * bufferSize> history {};
     int writeIndex = 0;
 };

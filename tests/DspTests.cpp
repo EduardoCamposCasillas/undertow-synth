@@ -20,6 +20,7 @@
 #include "dsp/Filter.h"
 #include "dsp/WavetableOscillator.h"
 #include "dsp/Lfo.h"
+#include "synth/Effects.h"
 #include "synth/VoiceManager.h"
 #include "synth/WavetableBank.h"
 
@@ -2667,19 +2668,612 @@ void testWarpCpuCost()
     worst.oscillators[1].fmMode = FmMode::rmSub;
     measureVoiceCpu ("16 notas, A y B: 16 copias, Mirror y FM/RM (peor caso)", 16, worst, true);
 }
+
+// --- Fase 8: efectos -----------------------------------------------------------------------------
+
+using undertow::dsp::Chorus;
+using undertow::dsp::ChorusParameters;
+using undertow::dsp::DelayParameters;
+using undertow::dsp::Distortion;
+using undertow::dsp::DistortionMode;
+using undertow::dsp::DistortionParameters;
+using undertow::dsp::HalfbandInterpolator;
+using undertow::dsp::Reverb;
+using undertow::dsp::ReverbParameters;
+using undertow::dsp::StereoDelay;
+using undertow::synth::EffectsChain;
+using undertow::synth::EffectsSettings;
+
+constexpr std::array<DistortionMode, 4> distortionModes { DistortionMode::softClip, DistortionMode::hardClip,
+                                                          DistortionMode::tube, DistortionMode::fold };
+
+const char* distortionName (DistortionMode mode) { return undertow::dsp::distortionModeNames[static_cast<size_t> (mode)]; }
+
+std::vector<float> sineSignal (double hz, double sampleRate, size_t numSamples, double amplitude = 1.0)
+{
+    std::vector<float> signal (numSamples);
+    for (size_t i = 0; i < numSamples; ++i)
+        signal[i] = static_cast<float> (amplitude * std::sin (2.0 * pi * hz * static_cast<double> (i) / sampleRate));
+    return signal;
+}
+
+std::vector<float> noiseSignal (size_t numSamples, unsigned seed, float amplitude = 0.5f)
+{
+    std::mt19937 random (seed);
+    std::uniform_real_distribution<float> uniform (-amplitude, amplitude);
+    std::vector<float> signal (numSamples);
+    for (auto& s : signal)
+        s = uniform (random);
+    return signal;
+}
+
+// Amplitud de un seno de frecuencia 'hz' dentro de 'signal' (desde 'start'), por correlación con ventana de Hann.
+double toneAmplitude (const std::vector<float>& signal, double hz, double sampleRate, size_t start)
+{
+    const size_t count = signal.size() - start;
+    Complex correlation {};
+    double windowSum = 0.0;
+    for (size_t i = 0; i < count; ++i)
+    {
+        const double window = 0.5 - 0.5 * std::cos (2.0 * pi * static_cast<double> (i) / static_cast<double> (count - 1));
+        correlation += window * static_cast<double> (signal[start + i])
+                       * std::polar (1.0, -2.0 * pi * hz * static_cast<double> (start + i) / sampleRate);
+        windowSum += window;
+    }
+    return 2.0 * std::abs (correlation) / windowSum;
+}
+
+double correlationOf (const std::vector<float>& a, const std::vector<float>& b, size_t start)
+{
+    double ab = 0.0, aa = 0.0, bb = 0.0;
+    for (size_t i = start; i < a.size(); ++i)
+    {
+        ab += static_cast<double> (a[i]) * b[i];
+        aa += static_cast<double> (a[i]) * a[i];
+        bb += static_cast<double> (b[i]) * b[i];
+    }
+    return ab / std::sqrt (std::max (aa * bb, 1.0e-30));
+}
+
+bool allFinite (const std::vector<float>& signal, float limit)
+{
+    return std::all_of (signal.begin(), signal.end(), [limit] (float s) { return std::isfinite (s) && std::abs (s) < limit; });
+}
+
+void testHalfbandInterpolator()
+{
+    std::printf ("Interpolador halfband (1x → 2x): plano hasta 20 kHz; la imagen espejo a −100 dB\n");
+
+    for (const double sr : sampleRates)
+    {
+        double ripple = 0.0, worstImage = -300.0;
+        for (const double hz : { 50.0, 1000.0, 5000.0, 10000.0, 15000.0, 19000.0, 20000.0 })
+        {
+            HalfbandInterpolator interpolator;
+            interpolator.prepare (sr);
+            constexpr size_t n = 65536;
+            std::vector<float> up (2 * n);
+            for (size_t i = 0; i < n; ++i)
+            {
+                const auto x = static_cast<float> (std::sin (2.0 * pi * hz * static_cast<double> (i) / sr));
+                interpolator.process (x, up[2 * i], up[2 * i + 1]);
+            }
+            ripple = std::max (ripple, std::abs (toDb (toneAmplitude (up, hz, 2.0 * sr, 1000))));
+            // Rellenar con ceros crea una copia del espectro en sr − f: el filtro debe borrarla.
+            worstImage = std::max (worstImage, toDb (toneAmplitude (up, sr - hz, 2.0 * sr, 1000)));
+        }
+        HalfbandInterpolator interpolator;
+        interpolator.prepare (sr);
+        std::printf ("  %4.1f kHz: retardo %.1f muestras; banda de paso ±%.5f dB; imagen %.1f dB\n", sr / 1000.0,
+                     interpolator.getLatency(), ripple, worstImage);
+        CHECK (ripple < 0.001);
+        CHECK (worstImage < -95.0);
+    }
+}
+
+std::vector<float> distort (const DistortionParameters& parameters, const std::vector<float>& input, double sr)
+{
+    Distortion distortion;
+    distortion.setParameters (parameters);
+    distortion.prepare (sr);
+    auto output = input;
+    distortion.process (output.data(), nullptr, static_cast<int> (output.size()));
+    return output;
+}
+
+void testDistortionMixZeroIsTransparent()
+{
+    std::printf ("Distorsión con Mix 0 %%: la señal pasa intacta por el oversampling x4 (solo se retrasa)\n");
+
+    for (const double sr : sampleRates)
+    {
+        double worst = 0.0;
+        for (const double hz : { 50.0, 1000.0, 10000.0, 18000.0, 20000.0 })
+        {
+            const auto output = distort ({ DistortionMode::hardClip, 1.0f, 1.0f, 0.0f }, sineSignal (hz, sr, 32768, 0.9), sr);
+            worst = std::max (worst, std::abs (toDb (toneAmplitude (output, hz, sr, 2000)) - toDb (0.9)));
+            if (verbose)
+                std::printf ("    %4.1f kHz, %5.0f Hz: %+.5f dB\n", sr / 1000.0, hz,
+                             toDb (toneAmplitude (output, hz, sr, 2000)) - toDb (0.9));
+        }
+        Distortion distortion;
+        distortion.prepare (sr);
+        std::printf ("  %4.1f kHz: error máx. %.5f dB; retardo %.1f muestras (%.2f ms)\n", sr / 1000.0, worst,
+                     distortion.getLatency(), 1000.0 * distortion.getLatency() / sr);
+        CHECK (worst < 0.001);
+    }
+}
+
+void testDistortionHarmonics()
+{
+    std::printf ("Distorsión: curvas simétricas = solo armónicos impares; Tube añade pares; sin continua\n");
+
+    constexpr double sr = 48000.0;
+    constexpr size_t n = 65536;
+    const double binHz = sr / n;
+    const double f0 = 64.0 * 16.0 * binHz; // cae justo en un bin (~750 Hz)
+    const auto input = sineSignal (f0, sr, n, 0.5);
+
+    for (const auto mode : distortionModes)
+    {
+        const auto output = distort ({ mode, 0.4f, 1.0f, 1.0f }, input, sr);
+        const std::vector<float> settled (output.begin() + static_cast<long> (n / 2), output.end());
+        const auto spectrum = magnitudeSpectrum (settled);
+        const double subBin = sr / static_cast<double> (settled.size());
+        const double fundamental = componentLevel (spectrum, f0, subBin);
+        const auto relative = [&] (double hz) { return toDb (componentLevel (spectrum, hz, subBin) / fundamental); };
+
+        const double second = relative (2.0 * f0), third = relative (3.0 * f0), fourth = relative (4.0 * f0);
+        double mean = 0.0;
+        for (const float s : settled)
+            mean += s;
+        mean /= static_cast<double> (settled.size());
+        std::printf ("  %-9s 2.º %7.1f dB, 3.º %6.1f dB, 4.º %7.1f dB, continua %.6f\n", distortionName (mode), second, third,
+                     fourth, mean);
+
+        CHECK (third > -40.0);
+        if (mode == DistortionMode::tube)
+            CHECK (second > -40.0);
+        else
+            CHECK (second < -90.0 && fourth < -90.0);
+        CHECK (std::abs (mean) < 1.0e-3);
+    }
+}
+
+// Distorsión "ingenua" (sin oversampling ni ADAA) para comparar el alias.
+std::vector<float> naiveTanh (const std::vector<float>& input, float drive)
+{
+    const float gain = Distortion::driveGain (DistortionMode::softClip, drive);
+    const float makeup = Distortion::makeupGain (gain);
+    std::vector<float> output (input.size());
+    for (size_t i = 0; i < input.size(); ++i)
+        output[i] = makeup * std::tanh (gain * input[i]);
+    return output;
+}
+
+void testDistortionAliasing()
+{
+    std::printf ("Distorsión: alias por debajo de 20 kHz con oversampling x4 + ADAA (seno de 0 dBFS, 4 sample rates)\n");
+
+    // 'upToC6' = notas hasta 1234.5 Hz (≈ D#6), el registro de casi todo lo que se distorsiona; 'worst' incluye C8.
+    struct Result { double worst = -300.0; double hz = 0.0; double upToC6 = -300.0; };
+    std::array<Result, distortionModes.size()> results {};
+    double naiveWorst = -300.0;
+
+    for (const double sr : sampleRates)
+    {
+        const size_t n = sr > 50000.0 ? 131072 : 65536;
+        const double binHz = sr / static_cast<double> (n);
+        for (const double hz : { 440.0, 1234.5, 2500.0, 4186.0 })
+        {
+            const auto input = sineSignal (hz, sr, n + 4096);
+            for (size_t m = 0; m < distortionModes.size(); ++m)
+            {
+                for (const float drive : { 0.5f, 1.0f })
+                {
+                    const auto output = distort ({ distortionModes[m], drive, 1.0f, 1.0f }, input, sr);
+                    const std::vector<float> settled (output.begin() + 4096, output.end());
+                    const double alias = worstAliasDb (magnitudeSpectrum (settled), hz, binHz);
+                    if (verbose)
+                        std::printf ("    %4.1f kHz %-9s drive %3.0f %% %7.1f Hz: %6.1f dB\n", sr / 1000.0,
+                                     distortionName (distortionModes[m]), 100.0f * drive, hz, alias);
+                    if (alias > results[m].worst)
+                    {
+                        results[m].worst = alias;
+                        results[m].hz = hz;
+                    }
+                    if (hz < 1500.0)
+                        results[m].upToC6 = std::max (results[m].upToC6, alias);
+                }
+            }
+            const std::vector<float> naive = naiveTanh (std::vector<float> (input.begin() + 4096, input.end()), 1.0f);
+            naiveWorst = std::max (naiveWorst, worstAliasDb (magnitudeSpectrum (naive), hz, binHz));
+        }
+    }
+
+    for (size_t m = 0; m < distortionModes.size(); ++m)
+    {
+        std::printf ("  %-9s hasta 1.2 kHz: %6.1f dB; peor caso %6.1f dB (seno de %.0f Hz)\n", distortionName (distortionModes[m]),
+                     results[m].upToC6, results[m].worst, results[m].hz);
+        CHECK (results[m].upToC6 < -65.0);
+        CHECK (results[m].worst < -50.0);
+    }
+    std::printf ("  (Soft Clip ingenuo, sin oversampling ni ADAA: %.1f dB)\n", naiveWorst);
+}
+
+void testDistortionKeepsLoudness()
+{
+    std::printf ("Distorsión: la compensación mantiene el volumen parecido con cualquier drive\n");
+
+    constexpr double sr = 48000.0;
+    const auto input = sineSignal (220.0, sr, 48000, 0.25); // −12 dBFS: el nivel de referencia
+    const double inputRms = rmsOf (input);
+    for (const auto mode : distortionModes)
+    {
+        double lowest = 100.0, highest = -100.0;
+        for (const float drive : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+        {
+            const double change = toDb (rmsOf (distort ({ mode, drive, 1.0f, 1.0f }, input, sr)) / inputRms);
+            lowest = std::min (lowest, change);
+            highest = std::max (highest, change);
+        }
+        std::printf ("  %-9s de %+.1f a %+.1f dB\n", distortionName (mode), lowest, highest);
+        CHECK (lowest > -6.0 && highest < 4.0);
+    }
+}
+
+void testDistortionChangesAreClickFree()
+{
+    std::printf ("Distorsión: cambiar de modo, drive, tono y mix de golpe no hace clics\n");
+
+    constexpr double sr = 48000.0;
+    const auto input = sineSignal (110.0, sr, 96000, 0.5);
+
+    Distortion distortion;
+    distortion.setParameters ({ DistortionMode::softClip, 0.3f, 1.0f, 1.0f });
+    distortion.prepare (sr);
+    auto output = input;
+    constexpr int block = 480;
+    const std::array<DistortionParameters, 5> steps { {
+        { DistortionMode::tube, 0.3f, 1.0f, 1.0f },
+        { DistortionMode::hardClip, 0.3f, 0.2f, 1.0f },
+        { DistortionMode::hardClip, 0.9f, 0.2f, 0.3f },
+        { DistortionMode::softClip, 0.1f, 1.0f, 1.0f },
+        { DistortionMode::fold, 0.1f, 1.0f, 0.0f },
+    } };
+    for (int start = 0, step = 0; start < static_cast<int> (output.size()); start += block)
+    {
+        if (start > 0 && start % 9600 == 0 && step < static_cast<int> (steps.size()))
+            distortion.setParameters (steps[static_cast<size_t> (step++)]);
+        distortion.process (output.data() + start, nullptr, block);
+    }
+
+    // Con la misma señal, una distorsión suave ya cambia a lo sumo ~0.02 por muestra; un clic sería mucho más.
+    const float jump = maxSampleJump (std::vector<float> (output.begin() + 4800, output.end()));
+    std::printf ("  salto máximo entre muestras: %.4f (el seno limpio: %.4f)\n", jump, maxSampleJump (input));
+    CHECK (jump < 0.06f);
+    CHECK (allFinite (output, 4.0f));
+}
+
+void testChorus()
+{
+    std::printf ("Chorus: Mix 0 = intacto; retardo central exacto; estéreo; estable con feedback máximo\n");
+
+    for (const double sr : sampleRates)
+    {
+        const auto n = static_cast<size_t> (sr); // 1 s
+        Chorus chorus;
+        chorus.setParameters ({ 0.8f, 0.5f, 0.0f, 0.0f });
+        chorus.prepare (sr);
+        auto left = noiseSignal (n, 1), right = left;
+        const auto original = left;
+        chorus.process (left.data(), right.data(), static_cast<int> (n));
+        CHECK (left == original && right == original);
+
+        // Depth 0 y Mix 100 %: un impulso sale exactamente 10 ms después (las dos copias en el centro).
+        chorus.setParameters ({ 0.8f, 0.0f, 0.0f, 1.0f });
+        chorus.prepare (sr);
+        std::vector<float> impulseL (n, 0.0f), impulseR (n, 0.0f);
+        impulseL[0] = impulseR[0] = 1.0f;
+        chorus.process (impulseL.data(), impulseR.data(), static_cast<int> (n));
+        const auto peak = static_cast<size_t> (std::max_element (impulseL.begin(), impulseL.end()) - impulseL.begin());
+        CHECK (std::abs (static_cast<double> (peak) - 0.010 * sr) <= 1.0);
+
+        // Con profundidad: los dos canales dejan de ser iguales y el nivel se mantiene.
+        chorus.setParameters ({ 1.0f, 0.7f, 0.0f, 1.0f });
+        chorus.prepare (sr);
+        auto noiseL = noiseSignal (n, 2), noiseR = noiseL;
+        const double inputRms = rmsOf (noiseL);
+        chorus.process (noiseL.data(), noiseR.data(), static_cast<int> (n));
+        const double correlation = correlationOf (noiseL, noiseR, n / 10);
+        const double level = toDb (rmsOf (noiseL) / inputRms);
+
+        chorus.setParameters ({ 5.0f, 1.0f, 1.0f, 1.0f }); // feedback máximo, LFO rápido y profundo
+        chorus.prepare (sr);
+        auto loudL = noiseSignal (4 * n, 3, 1.0f), loudR = noiseSignal (4 * n, 4, 1.0f);
+        chorus.process (loudL.data(), loudR.data(), static_cast<int> (4 * n));
+
+        std::printf ("  %4.1f kHz: retardo %.2f ms; correlación L/R %.2f; nivel %+.1f dB\n", sr / 1000.0, 1000.0 * peak / sr,
+                     correlation, level);
+        CHECK (correlation < 0.8);
+        CHECK (std::abs (level) < 2.0);
+        CHECK (allFinite (loudL, 20.0f) && allFinite (loudR, 20.0f));
+    }
+}
+
+void testDelayEchoes()
+{
+    std::printf ("Delay: ecos en la muestra exacta, cada uno × feedback; sync al tempo; ping-pong\n");
+
+    for (const double sr : sampleRates)
+    {
+        const auto n = static_cast<size_t> (2.2 * sr);
+        const auto run = [&] (float seconds, bool pingPong, std::vector<float>& left, std::vector<float>& right) {
+            StereoDelay delay;
+            delay.setParameters ({ seconds, 0.5f / StereoDelay::maxFeedback, 1.0f, 1.0f, pingPong });
+            delay.prepare (sr);
+            left.assign (n, 0.0f);
+            right.assign (n, 0.0f);
+            left[0] = 1.0f;
+            right[0] = pingPong ? 0.0f : 1.0f;
+            delay.process (left.data(), right.data(), static_cast<int> (n));
+        };
+
+        // Tiempo libre de 250 ms, feedback 50 %, Tone abierto: 0.5, 0.25, 0.125… exactos.
+        std::vector<float> left, right;
+        run (0.25f, false, left, right);
+        const auto period = static_cast<size_t> (std::lround (0.25 * sr));
+        bool exact = std::abs (left[0]) < 1.0e-7f;
+        float expected = 1.0f;
+        for (size_t echo = 1; echo <= 8; ++echo)
+        {
+            exact = exact && std::abs (left[echo * period] - expected) < 1.0e-6f && std::abs (right[echo * period] - expected) < 1.0e-6f;
+            exact = exact && std::abs (left[echo * period + 1]) < 1.0e-7f;
+            expected *= 0.5f;
+        }
+        CHECK (exact);
+
+        // Ping-pong: la entrada (sumada a mono, ×0.5) rebota L → R → L.
+        run (0.25f, true, left, right);
+        const bool bounces = std::abs (left[period] - 0.5f) < 1.0e-6f && std::abs (right[period]) < 1.0e-7f
+                             && std::abs (right[2 * period] - 0.25f) < 1.0e-6f && std::abs (left[2 * period]) < 1.0e-7f
+                             && std::abs (left[3 * period] - 0.125f) < 1.0e-6f;
+        CHECK (bounces);
+    }
+
+    // Sync: 1/4 a 120 BPM = 0.5 s; 1/8 con puntillo a 140 BPM = 0.3214 s.
+    undertow::synth::DelaySettings settings;
+    settings.tempoSync = true;
+    settings.division = 2; // 1/4
+    CHECK (std::abs (settings.resolvedSeconds (120.0) - 0.5f) < 1.0e-6f);
+    settings.division = undertow::synth::defaultDelayDivision; // 1/8 D
+    CHECK (std::abs (settings.resolvedSeconds (140.0) - 0.75f * 60.0f / 140.0f) < 1.0e-6f);
+    settings.tempoSync = false;
+    settings.timeSeconds = 0.123f;
+    CHECK (settings.resolvedSeconds (140.0) == 0.123f);
+}
+
+void testDelayChangesAreClickFree()
+{
+    std::printf ("Delay: cambiar el tiempo con ecos sonando no hace clics; estable con feedback y tono al máximo\n");
+
+    constexpr double sr = 48000.0;
+    const auto input = sineSignal (330.0, sr, 4 * 48000, 0.5);
+    StereoDelay delay;
+    delay.setParameters ({ 0.25f, 0.6f, 0.6f, 0.5f, false });
+    delay.prepare (sr);
+    auto left = input, right = input;
+    constexpr int block = 256;
+    for (int start = 0; start < static_cast<int> (left.size()); start += block)
+    {
+        if (start == 96000)
+            delay.setParameters ({ 0.4f, 0.6f, 0.6f, 0.5f, false });
+        if (start == 120064)
+            delay.setParameters ({ 0.1f, 0.6f, 0.9f, 0.7f, true });
+        delay.process (left.data() + start, right.data() + start, block);
+    }
+    const float jump = std::max (maxSampleJump (left), maxSampleJump (right));
+    std::printf ("  salto máximo: %.4f (el seno de entrada: %.4f)\n", jump, maxSampleJump (input));
+    CHECK (jump < 0.1f);
+
+    delay.setParameters ({ 0.05f, 1.0f, 1.0f, 1.0f, false });
+    delay.prepare (sr);
+    auto loudL = noiseSignal (20 * 48000, 5, 1.0f), loudR = noiseSignal (20 * 48000, 6, 1.0f);
+    delay.process (loudL.data(), loudR.data(), static_cast<int> (loudL.size()));
+    CHECK (allFinite (loudL, 25.0f) && allFinite (loudR, 25.0f));
+}
+
+// RT60 medido: integral de Schroeder (energía que queda desde cada instante) y pendiente entre −5 y −35 dB.
+// Como en acústica, se mide por bandas: aquí la zona grave-media (low-pass de 1 polo en 1 kHz). En los agudos la
+// caída es a propósito más rápida (damping, y el aire de una sala real).
+double measureRt60 (const std::vector<float>& left, const std::vector<float>& right, double sr)
+{
+    const double a = std::exp (-2.0 * pi * 1000.0 / sr);
+    double stateL = 0.0, stateR = 0.0;
+    std::vector<double> energy (left.size());
+    for (size_t i = 0; i < left.size(); ++i)
+    {
+        stateL = left[i] + a * (stateL - left[i]);
+        stateR = right[i] + a * (stateR - right[i]);
+        energy[i] = stateL * stateL + stateR * stateR;
+    }
+    std::vector<double> remaining (left.size() + 1, 0.0);
+    for (size_t i = left.size(); i-- > 0;)
+        remaining[i] = remaining[i + 1] + energy[i];
+    const auto timeAt = [&] (double db) {
+        const double threshold = remaining[0] * std::pow (10.0, db / 10.0);
+        size_t i = 0;
+        while (i < remaining.size() && remaining[i] > threshold)
+            ++i;
+        return static_cast<double> (i) / sr;
+    };
+    return 2.0 * (timeAt (-35.0) - timeAt (-5.0));
+}
+
+std::pair<std::vector<float>, std::vector<float>> reverbImpulse (const ReverbParameters& parameters, double sr, double seconds)
+{
+    Reverb reverb;
+    reverb.setParameters (parameters);
+    reverb.prepare (sr);
+    const auto n = static_cast<size_t> (seconds * sr);
+    std::vector<float> left (n, 0.0f), right (n, 0.0f);
+    left[0] = right[0] = 1.0f;
+    reverb.process (left.data(), right.data(), static_cast<int> (n));
+    return { left, right };
+}
+
+void testReverb()
+{
+    std::printf ("Reverb: tiempo de caída (RT60) medido = Decay; pre-delay; cola estéreo; Mix 0 = intacto\n");
+
+    for (const double sr : sampleRates)
+    {
+        double worstError = 0.0;
+        for (const float decay : { 0.8f, 2.5f, 6.0f })
+        {
+            for (const float size : { 0.0f, 0.5f, 1.0f })
+            {
+                const auto [left, right] = reverbImpulse ({ size, decay, 0.0f, 0.0f, 1.0f }, sr, 1.2 * decay + 0.5);
+                const double measured = measureRt60 (left, right, sr);
+                const double error = measured / decay - 1.0;
+                if (verbose)
+                    std::printf ("    %4.1f kHz decay %.1f s size %3.0f %%: medido %.2f s\n", sr / 1000.0, decay, 100.0f * size, measured);
+                if (std::abs (error) > std::abs (worstError))
+                    worstError = error;
+            }
+        }
+
+        // Pre-delay de 100 ms: nada sale antes (la red añade al menos ~12 ms más).
+        const auto [left, right] = reverbImpulse ({ 0.5f, 2.0f, 0.4f, 0.1f, 1.0f }, sr, 3.0);
+        const auto firstSound = static_cast<size_t> (
+            std::find_if (left.begin(), left.end(), [] (float s) { return std::abs (s) > 1.0e-6f; }) - left.begin());
+        const double tailCorrelation = correlationOf (left, right, static_cast<size_t> (0.2 * sr));
+
+        std::printf ("  %4.1f kHz: error del RT60 %+.1f %% (peor caso); primer sonido a %.1f ms; correlación L/R %.2f\n",
+                     sr / 1000.0, 100.0 * worstError, 1000.0 * firstSound / sr, tailCorrelation);
+        CHECK (std::abs (worstError) < 0.1);
+        CHECK (firstSound >= static_cast<size_t> (0.1 * sr));
+        CHECK (std::abs (tailCorrelation) < 0.3);
+    }
+
+    Reverb reverb;
+    reverb.setParameters ({ 0.5f, 3.0f, 0.5f, 0.02f, 0.0f });
+    reverb.prepare (48000.0);
+    auto left = noiseSignal (48000, 7), right = noiseSignal (48000, 8);
+    const auto originalL = left, originalR = right;
+    reverb.process (left.data(), right.data(), 48000);
+    CHECK (left == originalL && right == originalR);
+
+    // Decay máximo moviendo el tamaño y el damping: estable, sin NaN.
+    reverb.setParameters ({ 1.0f, Reverb::maxDecaySeconds, 0.0f, 0.25f, 1.0f });
+    reverb.prepare (48000.0);
+    auto loudL = noiseSignal (10 * 48000, 9, 1.0f), loudR = noiseSignal (10 * 48000, 10, 1.0f);
+    for (int start = 0; start < 10 * 48000; start += 4800)
+    {
+        const float size = static_cast<float> ((start / 4800) % 3) * 0.5f;
+        reverb.setParameters ({ size, Reverb::maxDecaySeconds, 1.0f - size, 0.25f * size, 1.0f });
+        reverb.process (loudL.data() + start, loudR.data() + start, 4800);
+    }
+    CHECK (allFinite (loudL, 50.0f) && allFinite (loudR, 50.0f));
+}
+
+void testEffectsChain()
+{
+    std::printf ("Cadena de efectos: todo apagado = señal intacta (bit a bit); encender y apagar sin clics\n");
+
+    constexpr double sr = 48000.0;
+    EffectsChain chain;
+    chain.prepare (sr);
+    EffectsSettings settings;
+    chain.setSettings (settings, 120.0);
+    chain.snapSwitches();
+
+    auto left = noiseSignal (48000, 11), right = noiseSignal (48000, 12);
+    const auto originalL = left, originalR = right;
+    chain.process (left.data(), right.data(), 48000);
+    CHECK (left == originalL && right == originalR);
+    CHECK (! chain.isAnyEffectActive());
+
+    // Seno grave; cada 100 ms se enciende o se apaga un efecto. Los efectos tienen parámetros suaves para que el
+    // salto entre muestras mida el fundido y no la distorsión en sí.
+    settings.distortion.parameters = { DistortionMode::softClip, 0.2f, 1.0f, 1.0f };
+    settings.chorus.parameters = { 0.5f, 0.3f, 0.0f, 0.5f };
+    settings.delay.parameters = { 0.3f, 0.3f, 0.7f, 0.5f, false };
+    settings.delay.tempoSync = false;
+    settings.delay.timeSeconds = 0.3f;
+    settings.reverb.parameters = { 0.5f, 2.0f, 0.4f, 0.02f, 0.5f };
+
+    const auto input = sineSignal (110.0, sr, 4 * 48000, 0.5);
+    auto outL = input, outR = input;
+    constexpr int block = 480;
+    for (int start = 0, step = 0; start < static_cast<int> (outL.size()); start += block, ++step)
+    {
+        if (step % 10 == 0)
+        {
+            const int toggle = (step / 10) % 8;
+            bool* flags[] = { &settings.distortion.enabled, &settings.chorus.enabled, &settings.delay.enabled,
+                              &settings.reverb.enabled };
+            *flags[toggle % 4] = toggle < 4;
+            chain.setSettings (settings, 120.0);
+        }
+        chain.process (outL.data() + start, outR.data() + start, block);
+    }
+    const float jump = std::max (maxSampleJump (outL), maxSampleJump (outR));
+    std::printf ("  salto máximo: %.4f (el seno de entrada: %.4f)\n", jump, maxSampleJump (input));
+    CHECK (jump < 0.05f);
+    CHECK (! chain.isAnyEffectActive()); // al final todos se apagaron
+}
+
+void testEffectsCpuCost()
+{
+    std::printf ("CPU de los efectos (48 kHz, estéreo)\n");
+
+    constexpr double sr = 48000.0;
+    constexpr int seconds = 10;
+    const auto measure = [&] (const char* label, const EffectsSettings& settings) {
+        EffectsChain chain;
+        chain.prepare (sr);
+        chain.setSettings (settings, 120.0);
+        chain.snapSwitches();
+        auto left = noiseSignal (static_cast<size_t> (seconds * sr), 13), right = noiseSignal (static_cast<size_t> (seconds * sr), 14);
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < seconds * 48000; i += 512)
+            chain.process (left.data() + i, right.data() + i, std::min (512, seconds * 48000 - i));
+        const double elapsed = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
+        std::printf ("  %-32s %5.2f %% de un núcleo\n", label, 100.0 * elapsed / seconds);
+    };
+
+    EffectsSettings settings;
+    settings.distortion.enabled = true;
+    measure ("Distorsión (oversampling x4)", settings);
+    settings.distortion.enabled = false;
+    settings.chorus.enabled = true;
+    measure ("Chorus", settings);
+    settings.chorus.enabled = false;
+    settings.delay.enabled = true;
+    measure ("Delay", settings);
+    settings.delay.enabled = false;
+    settings.reverb.enabled = true;
+    measure ("Reverb", settings);
+    settings.distortion.enabled = settings.chorus.enabled = settings.delay.enabled = true;
+    measure ("Los cuatro a la vez", settings);
+}
+
 } // namespace
 
 
 int main (int argc, char** argv)
 {
-    // Opciones: --verbose (detalle de las mediciones), --fase7 (solo los tests de la Fase 7, para iterar rápido).
-    bool onlyPhase7 = false;
+    // Opciones: --verbose (detalle de las mediciones); --fase7 / --fase8 (solo los tests de esa fase, para iterar rápido).
+    bool onlyPhase7 = false, onlyPhase8 = false;
     for (int i = 1; i < argc; ++i)
     {
         verbose = verbose || std::string_view (argv[i]) == "--verbose";
         onlyPhase7 = onlyPhase7 || std::string_view (argv[i]) == "--fase7";
+        onlyPhase8 = onlyPhase8 || std::string_view (argv[i]) == "--fase8";
     }
-    if (! onlyPhase7)
+    const bool all = ! onlyPhase7 && ! onlyPhase8;
+    if (all)
     {
         testSegmentTimesAreExactAtEverySampleRate();
         testReleaseFromMidAttackKeepsItsDuration();
@@ -2746,17 +3340,36 @@ int main (int argc, char** argv)
         testUnisonCpuCost();
     }
 
-    testWarpShapes();
-    testHalfbandDecimator();
-    testFmMatchesBessel();
-    testRingModulation();
-    testModulatedPathKeepsTheSound();
-    testWarpAliasing();
-    testFmAliasing();
-    testWarpSwitchIsClickFree();
-    testWarpAndFmDestinations();
-    testExtremeWarpIsSafe();
-    testWarpCpuCost();
+    if (all || onlyPhase7)
+    {
+        testWarpShapes();
+        testHalfbandDecimator();
+        testFmMatchesBessel();
+        testRingModulation();
+        testModulatedPathKeepsTheSound();
+        testWarpAliasing();
+        testFmAliasing();
+        testWarpSwitchIsClickFree();
+        testWarpAndFmDestinations();
+        testExtremeWarpIsSafe();
+        testWarpCpuCost();
+    }
+
+    if (all || onlyPhase8)
+    {
+        testHalfbandInterpolator();
+        testDistortionMixZeroIsTransparent();
+        testDistortionHarmonics();
+        testDistortionAliasing();
+        testDistortionKeepsLoudness();
+        testDistortionChangesAreClickFree();
+        testChorus();
+        testDelayEchoes();
+        testDelayChangesAreClickFree();
+        testReverb();
+        testEffectsChain();
+        testEffectsCpuCost();
+    }
 
     if (failures == 0)
         std::printf ("\nTodos los tests pasaron.\n");

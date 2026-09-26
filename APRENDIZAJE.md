@@ -1013,3 +1013,206 @@ Inténtalo primero; las pistas vendrán después.
 
 ### Retos completados
 - [ ] Reto Fase 7 — growl de riddim / dubstep
+
+---
+
+## Fase 8 — Efectos: distorsión, chorus, delay y reverb
+
+### Conceptos aprendidos
+**Efectos globales vs. por voz.** Todo lo anterior (osciladores, filtro, envolventes) existe **una vez por nota**. Los
+efectos procesan la **suma** de todas las notas, una sola vez. Por eso cuestan poco CPU, pero también por eso se
+comportan distinto: distorsionar un acorde entero no suena igual que distorsionar cada nota por separado (las notas
+se "mezclan" dentro de la distorsión y aparecen frecuencias nuevas, suma y diferencia de ellas: *intermodulación*).
+El orden es fijo, el clásico: **distorsión → chorus → delay → reverb**. Si la reverb fuera primero, la distorsión
+convertiría su cola en un zumbido sin forma.
+
+**Distorsión = waveshaping.** Se pasa la señal por una curva que no es una recta. Si la curva "aplasta" los picos, un
+seno se vuelve más cuadrado, y lo cuadrado son armónicos nuevos: brillo y agresividad.
+- **Curvas simétricas** (que tratan igual la mitad positiva y la negativa: Soft Clip, Hard Clip, Fold) solo crean
+  armónicos **impares** (3.º, 5.º, 7.º…): sonido hueco y "de radio".
+- **Curvas asimétricas** (Tube) crean además armónicos **pares** (2.º, 4.º…), que son octavas y quintas de la nota:
+  suenan más "gordas" y musicales. Es parte de por qué la gente describe las válvulas como "cálidas".
+- **Fold** (plegado) no aplasta la onda: cuando pasa del límite la dobla hacia dentro. Cada pliegue añade armónicos,
+  como la FM. Es el timbre metálico y "hablador" de la síntesis west coast (Buchla).
+
+El problema digital es el mismo de la Fase 3: esos armónicos no tienen fin, y lo que pasa de la mitad de la frecuencia
+de muestreo se refleja como **aliasing**. Aquí se combate con dos armas. Primero, **oversampling ×4**: la distorsión
+ocurre a 4 veces la frecuencia del host y después se filtra. Segundo, **ADAA**: en lugar de evaluar la curva en cada
+muestra, se promedia la curva entre la muestra anterior y la actual. Ese promedio redondea las esquinas que crean los
+armónicos más agudos. Medido: un seno de 440 Hz con el drive al máximo deja el alias a −95 dB; sin estas dos técnicas,
+a −17 dB (se oye como un "pitido" desafinado encima de la nota).
+
+**Compensación de volumen.** Subir el drive también sube el volumen, y el oído engaña: "más fuerte" parece "mejor".
+El plugin compensa automáticamente para que una señal de nivel normal salga con el mismo pico. Así, al comparar drive
+0 % y 80 %, oyes el cambio de **timbre**, no de volumen.
+
+**Chorus.** Es una copia de la señal retrasada unos 10 ms, con ese retraso moviéndose lentamente con un LFO. Mientras
+el retraso crece, la copia suena un pelo más grave, y mientras decrece, un pelo más aguda (el efecto Doppler de una
+sirena que pasa). Mezclada con la original da la sensación de "varios instrumentos". En este chorus la copia de la
+derecha se mueve al revés que la de la izquierda (como en el Roland Juno): el sonido se abre en estéreo. Con
+**feedback**, la copia vuelve a entrar y se acerca a un **flanger** (el "avión" metálico).
+
+**Delay (eco).** Una memoria de hasta 4 s: lo que entra sale X tiempo después. Con **feedback**, la salida vuelve a
+entrar: cada eco es el anterior multiplicado por el feedback. Con 50 %, cada eco está 6 dB por debajo. **Tone** es un
+low-pass dentro del lazo: cada repetición pasa otra vez por él y sale más oscura, como en un delay de cinta. Con
+**Sync**, el tiempo se mide en figuras musicales y se ajusta solo si cambias el tempo en FL.
+
+**Reverb.** Una sala real devuelve miles de reflexiones, cada vez más juntas y más débiles. La reverb de Undertow las
+fabrica con una **red de 8 líneas de retardo realimentadas** (FDN). Lo que sale de cada línea se reparte entre todas
+las demás, así que el número de ecos se multiplica en cada vuelta, como en una sala. Antes de la red hay **difusores**
+(filtros all-pass) que convierten el golpe de entrada en una nube densa desde el principio. El **Decay** es el RT60 de
+la acústica: el tiempo que tarda el sonido en caer 60 dB, y se cumple (medido: −5 %). El **Pre-Delay** es el hueco
+entre el sonido directo y la reverb: el cerebro lo usa para "medir" la sala.
+
+### Qué hace cada control al sonido
+| Control | Qué se oye | Qué se ve (espectro / osciloscopio) |
+|---|---|---|
+| **Distorsión: Soft Clip** | Poco drive: calor, "cuerpo", más presencia. Mucho: fuzz redondo. | Los picos se redondean; aparecen el 3.º, 5.º… armónicos. |
+| **Hard Clip** | Más agresivo y "digital" que el Soft; con mucho drive, casi una cuadrada. | Picos cortados en plano; armónicos impares que bajan despacio. |
+| **Tube** | Más gordo y cálido; en acordes, más "sucio". | Onda asimétrica; aparecen el 2.º y el 4.º armónico. |
+| **Fold** | Metálico, vocal, cambia muchísimo con el drive: un barrido de drive "habla". | La onda se dobla hacia dentro; el espectro se llena de armónicos que suben y bajan. |
+| **Drive** | Cuánta distorsión. El volumen se mantiene: lo que cambia es el brillo y la agresividad. | Más armónicos, más altos. |
+| **Tone** | Oscurece solo lo distorsionado: quita el "fizz" (el siseo áspero de arriba). | Corta los armónicos altos que acaba de crear la distorsión. |
+| **Mix (distorsión)** | Mezcla en paralelo: conserva el ataque y el grave limpios con el "pelo" de la distorsión encima. | — |
+| **Chorus: Rate** | Lento (0.2–1 Hz): ondulación suave. Rápido (3–8 Hz): vibrato, mareo. | — |
+| **Chorus: Depth** | Cuánto se desafina la copia. Poco: ancho sutil. Mucho: "desafinado a propósito" (lo-fi, cinta vieja). | — |
+| **Chorus: Feedback** | Hacia el flanger: un silbido metálico que sube y baja. | Picos y valles (un "peine") que se mueven por el espectro. |
+| **Chorus: Mix** | 50 % = el chorus clásico (la cancelación entre copia y original es lo que "mueve"). 100 % = vibrato puro. | — |
+| **Delay: Time / Division** | Corto (< 50 ms): "doblaje", slapback. 1/8 o 1/4: eco rítmico. 1/8 D: el "galope" de U2 / The Edge. | En el osciloscopio: copias de la nota separadas por el tiempo del eco. |
+| **Delay: Feedback** | Cuántas repeticiones. > 80 %: los ecos se acumulan y "lavan" la mezcla. | — |
+| **Delay: Tone** | Ecos oscuros = se quedan "detrás" y no molestan a la voz principal. | Cada eco con menos agudos que el anterior. |
+| **Ping-Pong** | Los ecos saltan de izquierda a derecha: ancho y movimiento. | — |
+| **Reverb: Size** | Pequeño: habitación, ecos densos y cortos. Grande: catedral, ecos más separados. | — |
+| **Reverb: Decay** | Cuánto dura la cola: 0.5 s habitación, 2–3 s sala, 8–30 s espacio "infinito" (ambient). | La cola en el osciloscopio. |
+| **Reverb: Damping** | Alto: cola oscura y suave (sala con cortinas). Bajo: cola brillante y metálica (baño de azulejos). | Los agudos de la cola caen antes que los graves. |
+| **Reverb: Pre-Delay** | 0: el sonido "dentro" de la reverb. 30–80 ms: el ataque queda limpio delante y la reverb detrás. | — |
+| **Reverb: Mix** | 10–20 %: espacio natural. 50 %+: sonido lejano, de "fondo". | — |
+
+### Ejercicio de escucha guiado
+Montaje igual que en las fases anteriores: en el canal del Mixer de Undertow, **Fruity Parametric EQ 2** (espectro) y
+**Wave Candy** (osciloscopio). Todo lo nuevo está en la pestaña **Efectos**.
+
+1. **Distorsión y armónicos.** Osc A: *Basic Shapes* **0 %** (seno). Mantén **A5 (440 Hz)**. Distorsión **On**, Soft
+   Clip, Tone 100 %, Mix 100 %. Sube Drive de 0 a 100 %. En el EQ aparecen líneas en 1320, 2200, 3080 Hz (impares), pero
+   **no** en 880 ni 1760. Cambia a **Tube**: ahora sí aparece 880 Hz (el 2.º armónico). Fíjate en que el volumen
+   percibido casi no cambia.
+2. **Hard Clip vs Soft Clip.** Misma nota, Drive **70 %**. Alterna Soft ↔ Hard: el Hard es más áspero. En el
+   osciloscopio, el Soft tiene los hombros redondos y el Hard, planos y cortados.
+3. **Fold.** Modo **Fold**, Drive **0 %** y súbelo muy despacio hasta 100 %: el timbre "habla", como una vocal que
+   cambia. Es un barrido muy distinto al del filtro. Pon una ruta de modulación a algo que ya conoces… ¡no se puede! Los
+   efectos no son destinos de la matriz (son globales). Por ahora, automatízalo en FL (clic derecho → *Create
+   automation clip*).
+4. **Tone y Mix.** Cambia a *Basic Shapes* **67 %** (sierra), nota **C4 (131 Hz)**, Soft Clip Drive **80 %**: mucho
+   "fizz" arriba. Baja Tone a **40 %**: el fizz desaparece y queda el cuerpo. Ahora Mix **40 %**: vuelve el ataque limpio
+   con la distorsión "por detrás" (distorsión en paralelo, un truco clásico de mezcla).
+5. **Chorus.** Apaga la distorsión. Osc A sierra, unison 1. Toca un acorde **C5–E5–G5** y enciende el **Chorus**
+   (Rate 0.8 Hz, Depth 50 %, Mix 50 %). Con auriculares: el acorde se abre a los lados y "respira". Sube Depth a 100 % y
+   Rate a 5 Hz: mareo. Vuelve a Rate 0.3 Hz y sube Feedback a 80 %: flanger.
+6. **Delay.** Apaga el chorus. Nota corta (Attack 1 ms, Decay 200 ms, Sustain 0 %, Release 100 ms). Delay **On**,
+   Sync, **1/4**, Feedback 40 %, Mix 30 %. Pon un patrón de negras en el Piano Roll a 120 BPM: los ecos caen justo encima
+   de las notas. Cambia a **1/8 D**: los ecos caen "entre" las notas y crean un ritmo nuevo. Activa **Ping-Pong** y
+   escucha con auriculares. Baja Tone a 20 %: los ecos se oscurecen y se van "atrás".
+7. **Reverb.** Apaga el delay. Notas cortas sueltas (tipo pluck). Reverb **On**, Size 50 %, Decay 2.5 s, Mix 30 %.
+   Prueba Decay 0.6 s (habitación) → 8 s (catedral). Damping 0 % vs 90 %: cola brillante vs oscura. Pre-Delay 0 vs
+   **60 ms**: con 60 ms, el golpe de la nota se oye nítido y la reverb llega un instante después.
+8. **Artefactos a buscar.**
+   - Encender y apagar cada efecto con notas sonando: **sin clics**. Al apagar el delay o la reverb, la cola se corta
+     en 10 ms (a propósito).
+   - Cambiar la división del delay con ecos sonando: un fundido de 50 ms, **sin** que los ecos se desafinen.
+   - Activar o desactivar Ping-Pong con ecos: sin clic.
+   - Con todos los efectos apagados, el sonido debe ser **idéntico** al de la Fase 7.
+   - Con la distorsión al máximo en notas agudas (C7–C8), escucha si hay un pitido que no sigue a la nota: debería estar
+     muy por debajo de la nota (medido: −55 dB en C8).
+   - Colas largas (Decay 20 s + delay con feedback 90 %) durante un rato: el volumen no debe crecer sin control.
+   - Al exportar desde FL, la cola de la reverb y del delay debe quedar completa (el plugin informa cuánto dura).
+
+### Recetas
+**1. Pad "Juno" de los 80 (synthwave, 100 BPM)**
+1. Osc A: *Basic Shapes* **67 %** (sierra), Unison **1**. Osc B: **On**, *Basic Shapes* **100 %** (cuadrada),
+   Octave **−1**, Level **50 %**.
+2. Filtro **On**, **Low Pass 24 dB**, Cutoff **2.2 kHz**, Resonance **15 %**, Key Track **40 %**.
+3. Env 1: Attack **400 ms**, Decay 1 s, Sustain **80 %**, Release **1.5 s**. Voices **8**.
+4. LFO 1: *Triangle*, Free, sin Sync, Rate **0.2 Hz**; ruta **LFO 1 → Filter Cutoff, +6 %** (una respiración lenta).
+5. **Chorus** On: Rate **0.5 Hz**, Depth **60 %**, Feedback 0 %, Mix **50 %**.
+6. **Reverb** On: Size **70 %**, Decay **4 s**, Damping **50 %**, Pre-Delay **20 ms**, Mix **30 %**.
+7. Piano Roll: acordes largos de 2 compases (**Am – F – C – G**, en la octava 4–5).
+8. *Por qué funciona:*
+   - Una sola sierra con **chorus** suena más "analógica" y ancha que un unison: el chorus se mueve lento y de forma
+     continua, justo como el Juno-60 (ese chorus ES el sonido de ese sinte).
+   - El filtro con key tracking evita que las notas altas chillen.
+   - La reverb larga pero oscura (damping) crea espacio sin tapar el acorde siguiente.
+
+**2. Bajo medio distorsionado (drum & bass / house, 174 o 124 BPM)**
+1. Osc A: *Basic Shapes* **67 %** (sierra), Unison **2**, Detune **10 %**, Width **0 %** (mono: el bajo debe ir al centro).
+2. Sub: **On**, *Sine*, Octave **−1**, Level **60 %**.
+3. Filtro **On**, **Low Pass 24 dB**, Cutoff **600 Hz**, Resonance **20 %**. Env 2: Attack 1 ms, Decay **250 ms**,
+   Sustain **20 %**; ruta **Env 2 → Filter Cutoff, +30 %**.
+4. Voices **1**. Env 1: Attack 2 ms, Decay 400 ms, Sustain **90 %**, Release 60 ms.
+5. **Distorsión** On: **Tube**, Drive **55 %**, Tone **45 %**, Mix **70 %**.
+6. Sin chorus, delay ni reverb (el bajo seco y centrado).
+7. Piano Roll: un patrón de corcheas con notas en **E3 (82 Hz)** y **G3 (98 Hz)**, alguna nota a la octava.
+8. *Por qué funciona:*
+   - La distorsión **después** del filtro añade armónicos nuevos arriba: el bajo se oye en altavoces pequeños (en el
+     móvil no suena el grave, pero sí sus armónicos, y el cerebro "reconstruye" la nota).
+   - Tube añade el 2.º armónico: más gordura que un clip simétrico.
+   - Tone recorta el fizz y el Mix al 70 % conserva el golpe limpio del ataque y el sub intacto.
+
+**3. Lead con eco "galopante" (pop / trance)**
+1. Osc A: *Basic Shapes* **67 %**, Unison **3**, Detune **15 %**. Voices **1**.
+2. Filtro Low Pass 12 dB, Cutoff **5 kHz**. Env 1: Attack 3 ms, Decay 300 ms, Sustain 70 %, Release 150 ms.
+3. **Delay** On: Sync, **1/8 D**, Feedback **35 %**, **Ping-Pong**, Tone **40 %**, Mix **25 %**.
+4. **Reverb** On: Size 50 %, Decay **1.8 s**, Damping 40 %, Pre-Delay **40 ms**, Mix **18 %**.
+5. Piano Roll: una melodía en negras y corcheas entre **C6 y C7**.
+6. *Por qué funciona:* el eco a 1/8 con puntillo cae en los huecos de la melodía y "rellena" el ritmo sin pisar las
+   notas; oscuro y rebotando a los lados, no compite con el lead del centro. El pre-delay deja el ataque nítido.
+
+### Reto sin receta
+**Un lead de synthwave** (referencias: Kavinsky – "Nightcall", The Midnight, la banda sonora de *Drive*).
+
+Tu reto, a **100 BPM**: una melodía de 2 compases entre **C5 y C6** donde:
+- el lead suene "de los 80": ancho, brillante pero no áspero, con un leve vaivén,
+- los ecos marquen el ritmo sin ensuciar la melodía,
+- se sienta en un espacio grande pero se entienda cada nota,
+- y, en mono (pon el Mixer de FL en mono un momento), no pierda cuerpo.
+
+Pista para empezar: los tres efectos "de espacio" de esta fase hacen tres trabajos distintos (ancho, ritmo y sala).
+Inténtalo primero; las pistas vendrán después.
+
+### Vocabulario
+- **Saturación / clipping.** Aplastar (suave) o cortar (duro) los picos de la onda. *Ejemplo:* el "calor" de una
+  cinta analógica empujada; el fuzz de "Satisfaction" (The Rolling Stones).
+- **Armónicos pares e impares.** Pares = octavas y quintas (cálidos, "gordos"); impares = sonido hueco, de clarinete o
+  de radio. *Ejemplo:* un amplificador de válvulas saturado suave (pares) frente a un fuzz de transistores (impares).
+- **Waveshaping.** Transformar la onda con una curva. *Ejemplo:* casi toda distorsión de guitarra y de sinte.
+- **Wavefolding.** Plegar la onda sobre sí misma cuando pasa de un límite. *Ejemplo:* los sintes Buchla y los módulos
+  "west coast"; muchos bajos de neurofunk.
+- **Intermodulación.** Frecuencias nuevas (sumas y diferencias) al distorsionar varias notas juntas. *Ejemplo:* por eso
+  un power chord (solo tónica y quinta) suena bien distorsionado y un acorde mayor completo suena "sucio".
+- **Distorsión en paralelo.** Mezclar la señal distorsionada con la limpia (Mix). *Ejemplo:* la compresión y
+  distorsión en paralelo de las baterías y bajos del rock y la música electrónica.
+- **Chorus.** Copias levemente desafinadas y en movimiento. *Ejemplo:* las guitarras limpias de "Come As You Are"
+  (Nirvana); los pads del Juno-60.
+- **Flanger.** Chorus muy corto con realimentación: silbido de avión. *Ejemplo:* "Itchycoo Park" (Small Faces, 1967), uno de los
+  primeros flangers famosos.
+- **Efecto Doppler.** El tono sube cuando la fuente se acerca y baja cuando se aleja; un retardo que cambia hace lo
+  mismo. *Ejemplo:* una ambulancia que pasa; un altavoz Leslie de órgano.
+- **Delay / eco, feedback.** Repetición retrasada; feedback = cuántas repeticiones. *Ejemplo:* casi cualquier dub jamaicano
+  (King Tubby, Lee "Scratch" Perry), donde el eco es un instrumento más.
+- **Slapback.** Un solo eco corto (80–150 ms). *Ejemplo:* la voz de Elvis en sus grabaciones de Sun Records
+  ("That's All Right", 1954).
+- **Puntillo / tresillo (dotted / triplet).** Figuras de 1.5× y 2/3 de la duración. *Ejemplo:* el delay a 1/8 con
+  puntillo de The Edge en "Where the Streets Have No Name" (U2).
+- **Ping-pong.** Ecos que alternan entre izquierda y derecha. *Ejemplo:* muchas producciones de dub y de trance.
+- **Reverb, cola (tail).** La persistencia del sonido en un espacio; la cola es lo que queda al soltar. *Ejemplo:* la
+  batería con reverb gigante de "In the Air Tonight" (Phil Collins).
+- **RT60 / Decay.** Tiempo que tarda la reverb en caer 60 dB. *Ejemplo:* una habitación ≈ 0.5 s; una catedral, 5–10 s.
+- **Pre-delay.** Hueco entre el sonido directo y la reverb. *Ejemplo:* las voces de pop llevan 20–80 ms para que la
+  letra se entienda aunque tengan mucha reverb.
+- **Difusión, reflexiones tempranas.** Los primeros ecos, que dan la sensación del tamaño y la forma de la sala.
+  *Ejemplo:* la diferencia entre aplaudir en un pasillo (ecos sueltos, "flutter") y en un auditorio (nube densa).
+- **Damping.** Cuánto se apagan los agudos en la cola. *Ejemplo:* un estudio con paredes de tela (mucho damping)
+  frente a un baño de azulejos (poco).
+- **Dry / wet.** Señal original / procesada; el Mix las reparte. *Ejemplo:* "reverb al 20 %" = 80 % seco, 20 % mojado.
+
+### Retos completados
+- [ ] Reto Fase 8 — lead de synthwave
