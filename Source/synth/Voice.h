@@ -7,6 +7,7 @@
 
 #include "dsp/AdsrEnvelope.h"
 #include "dsp/Filter.h"
+#include "dsp/HalfbandDecimator.h"
 #include "dsp/Lfo.h"
 #include "dsp/NoiseGenerator.h"
 #include "dsp/Pitch.h"
@@ -72,6 +73,41 @@ struct SourceLevel
     }
 };
 
+// Fase 7: los modos de warp y de FM/RM de los dos osciladores. Cambiar cualquiera cambia la onda de golpe (y quizá
+// el camino de cálculo), así que la voz los aplica con un fundido corto (ver Voice::updateDuck).
+struct SourcePathConfig
+{
+    std::array<dsp::WarpMode, numOscillators> warp { dsp::WarpMode::none, dsp::WarpMode::none };
+    std::array<FmMode, numOscillators> fm { FmMode::off, FmMode::off };
+
+    [[nodiscard]] static SourcePathConfig from (const SourceSettings& settings) noexcept
+    {
+        SourcePathConfig config;
+        for (size_t o = 0; o < config.warp.size(); ++o)
+        {
+            config.warp[o] = settings.oscillators[o].warpMode;
+            config.fm[o] = settings.oscillators[o].fmMode;
+        }
+        return config;
+    }
+
+    // Con algún warp o FM/RM las fuentes van por el camino sobremuestreado.
+    [[nodiscard]] bool isComplex() const noexcept
+    {
+        for (size_t o = 0; o < warp.size(); ++o)
+            if (warp[o] != dsp::WarpMode::none || fm[o] != FmMode::off)
+                return true;
+        return false;
+    }
+
+    [[nodiscard]] bool uses (FmSource source) const noexcept
+    {
+        return fmSourceOf (fm[0]) == source || fmSourceOf (fm[1]) == source;
+    }
+
+    bool operator== (const SourcePathConfig&) const = default;
+};
+
 // Una voz = fuentes (Osc A, Osc B, sub, ruido) → filtro → amplificador (envolvente), más sus fuentes de
 // modulación propias (Env 2, Env 3, LFOs). El VoiceManager decide qué nota toca cada una.
 // Desde la Fase 6 la voz es estéreo: el unison y el paneo reparten las copias entre los dos canales.
@@ -80,10 +116,14 @@ class Voice
 public:
     void prepare (double sampleRate) noexcept
     {
-        for (auto& oscillator : oscillators)
-            oscillator.setSampleRate (sampleRate);
-        subOscillator.setSampleRate (sampleRate);
+        baseSampleRate = sampleRate;
+        for (auto& decimator : decimators)
+            decimator.prepare (sampleRate);
+        applyPathConfig ({}); // fija también la frecuencia de muestreo de los osciladores y el sub
         noise.setSampleRate (sampleRate);
+        duckStage = DuckStage::none;
+        duckGain = 1.0f;
+        duckStep = static_cast<float> (1.0 / (duckSeconds * sampleRate));
         envelope.setSampleRate (sampleRate);
         envelope.reset();
         envelope2.setSampleRate (sampleRate);
@@ -162,6 +202,15 @@ public:
             // Voz en silencio: cada nota arranca igual (fase 0 sin unison; fases al azar con unison), y el
             // filtro empieza vacío y con el cutoff de ESTA nota (sin barrer desde el de la nota anterior).
             // Niveles y afinación saltan directo a sus valores: no hay nada sonando que pueda hacer clic.
+            // Los modos de warp y FM también se aplican directamente (sin el fundido de updateDuck).
+            if (const auto wanted = SourcePathConfig::from (sourceSettings); wanted != appliedPaths)
+                applyPathConfig (wanted);
+            for (auto& decimator : decimators)
+                decimator.reset();
+            duckStage = DuckStage::none;
+            duckGain = 1.0f;
+            lastOutputs = {};
+
             for (size_t o = 0; o < oscillators.size(); ++o)
             {
                 const auto& osc = sourceSettings.oscillators[o];
@@ -169,6 +218,8 @@ public:
                 oscillatorLevels[o].snap (osc.enabled, osc.level);
                 tuning[o] = osc.tuningSemitones();
                 oscillators[o].setPitchOffset (tuning[o]);
+                warpKnobs[o] = osc.warpAmount;
+                fmKnobs[o] = osc.fmAmount;
             }
             subOscillator.reset();
             subLevel.snap (sourceSettings.sub.enabled, sourceSettings.sub.level);
@@ -261,8 +312,15 @@ public:
         for (size_t o = 0; o < oscillators.size(); ++o)
             stereo = stereo || (! oscillatorLevels[o].isSilent (sourceSettings.oscillators[o].enabled) && oscillators[o].isStereo());
         if (stereo && ! filterStereo)
+        {
             filter.copyLeftStateToRight();
+            decimators[1].copyStateFrom (decimators[0]);
+        }
         filterStereo = stereo;
+
+        // ¿Cambió algún modo de warp o FM/RM? Se aplica con un fundido: bajar, cambiar y volver a subir.
+        if (SourcePathConfig::from (sourceSettings) != appliedPaths && duckStage != DuckStage::silent)
+            duckStage = DuckStage::fadingOut;
 
         for (int i = 0; i < numSamples && envelope.isActive(); ++i)
         {
@@ -322,6 +380,8 @@ public:
             snapModulation = false; // solo la primera muestra de una nota salta directo a sus valores
 
             // --- Fuentes de sonido ---
+            if (duckStage != DuckStage::none)
+                updateDuck();
             float sampleLeft = 0.0f, sampleRight = 0.0f;
             renderSources (sampleLeft, sampleRight, stereo);
 
@@ -382,6 +442,12 @@ public:
         return oscillators[static_cast<size_t> (osc)];
     }
     [[nodiscard]] double getSubFrequency() const noexcept { return subOscillator.getFrequency(); }
+    [[nodiscard]] int getOversampling() const noexcept { return oversampling; }
+    [[nodiscard]] bool isModulatedPath() const noexcept { return complexPath; }
+    [[nodiscard]] double getSourceLatency() const noexcept
+    {
+        return complexPath && oversampling > 1 ? decimators[0].getLatency() : 0.0;
+    }
     [[nodiscard]] float getFilterCutoffHz() const noexcept { return filter.getEffectiveCutoffHz(); }
 
     // Semilla común del S&H en modo Free: todas las voces sacan los mismos valores al azar.
@@ -439,7 +505,19 @@ private:
         destinationValues = sums;
     }
 
-    // Suma de las 4 fuentes, cada una con su nivel. Sub y ruido son mono (van igual a los dos canales).
+    // Lo que las fuentes necesitan en esta muestra (se calcula una vez por muestra de salida; con oversampling
+    // sirve para las dos muestras internas).
+    struct SourceFrame
+    {
+        std::array<bool, numOscillators> audible {};  // se oye (On o apagándose)
+        std::array<bool, numOscillators> computed {}; // se calcula: se oye o modula al otro oscilador
+        std::array<float, numOscillators> gains {};
+        std::array<float, numOscillators> fmDepth {}; // FM: ciclos de desplazamiento por unidad de señal; RM: 0..1
+        bool subAudible = false, subComputed = false;
+        bool noiseAudible = false, noiseComputed = false;
+        float subGain = 0.0f, noiseGain = 0.0f;
+    };
+
     void renderSources (float& left, float& right, bool stereo) noexcept
     {
         const auto modulationOf = [this] (ModDestination d) { return destinationValues[index (d)]; };
@@ -447,13 +525,16 @@ private:
 
         struct OscillatorDestinations
         {
-            ModDestination position, pitch, level, detune;
+            ModDestination position, pitch, level, detune, warp, fm;
         };
         constexpr std::array<OscillatorDestinations, numOscillators> destinations { {
-            { ModDestination::oscAPosition, ModDestination::oscAPitch, ModDestination::oscALevel, ModDestination::oscADetune },
-            { ModDestination::oscBPosition, ModDestination::oscBPitch, ModDestination::oscBLevel, ModDestination::oscBDetune },
+            { ModDestination::oscAPosition, ModDestination::oscAPitch, ModDestination::oscALevel, ModDestination::oscADetune,
+              ModDestination::oscAWarp, ModDestination::oscAFm },
+            { ModDestination::oscBPosition, ModDestination::oscBPitch, ModDestination::oscBLevel, ModDestination::oscBDetune,
+              ModDestination::oscBWarp, ModDestination::oscBFm },
         } };
 
+        SourceFrame frame;
         for (size_t o = 0; o < oscillators.size(); ++o)
         {
             const auto& settings = sourceSettings.oscillators[o];
@@ -465,46 +546,233 @@ private:
             const auto& d = destinations[o];
             oscillator.setPitchOffset (tuning[o] + globalPitch + modulationOf (d.pitch) * pitchModulationSemitones);
 
-            if (oscillatorLevels[o].isSilent (settings.enabled))
+            // Un oscilador apagado se sigue calculando si el otro lo usa como modulador de FM o RM.
+            frame.audible[o] = ! oscillatorLevels[o].isSilent (settings.enabled);
+            frame.computed[o] = frame.audible[o]
+                                || (complexPath && fmSourceOf (appliedPaths.fm[1 - o]) == FmSource::otherOscillator);
+            if (! frame.computed[o])
                 continue;
 
             oscillator.setPositionModulation (modulationOf (d.position));
             oscillator.setDetuneModulation (modulationOf (d.detune));
-            const float gain = oscillatorLevels[o].next (settings.enabled, settings.level, modulationOf (d.level), smoothingCoef);
+            if (frame.audible[o])
+                frame.gains[o] = oscillatorLevels[o].next (settings.enabled, settings.level, modulationOf (d.level), smoothingCoef);
+
+            if (complexPath)
+            {
+                // Warp y FM/RM: perilla suavizada (5 ms) + modulación de la matriz.
+                SourceLevel::glide (warpKnobs[o], settings.warpAmount, smoothingCoef);
+                oscillator.setWarpAmount (warpKnobs[o] + modulationOf (d.warp));
+                SourceLevel::glide (fmKnobs[o], settings.fmAmount, smoothingCoef);
+                const float amount = std::clamp (fmKnobs[o] + modulationOf (d.fm), 0.0f, 1.0f);
+                frame.fmDepth[o] = isFrequencyModulation (appliedPaths.fm[o]) ? maxFmCycles * amount * amount : amount;
+            }
+        }
+
+        SourceLevel::glide (subTuning, 12.0f * static_cast<float> (sourceSettings.sub.octave), smoothingCoef);
+        subOscillator.setPitchOffset (subTuning + globalPitch);
+        frame.subAudible = ! subLevel.isSilent (sourceSettings.sub.enabled);
+        frame.subComputed = frame.subAudible || (complexPath && appliedPaths.uses (FmSource::sub));
+        if (frame.subAudible)
+            frame.subGain = subLevel.next (sourceSettings.sub.enabled, sourceSettings.sub.level,
+                                           modulationOf (ModDestination::subLevel), smoothingCoef);
+
+        frame.noiseAudible = ! noiseLevel.isSilent (sourceSettings.noise.enabled);
+        frame.noiseComputed = frame.noiseAudible || (complexPath && appliedPaths.uses (FmSource::noise));
+        if (frame.noiseAudible)
+            frame.noiseGain = noiseLevel.next (sourceSettings.noise.enabled, sourceSettings.noise.level,
+                                               modulationOf (ModDestination::noiseLevel), smoothingCoef);
+
+        if (! complexPath)
+        {
+            mixSources (frame, left, right, stereo);
+            if (duckGain < 1.0f)
+            {
+                left *= duckGain;
+                right *= duckGain;
+            }
+            return;
+        }
+
+        // Camino de la Fase 7: las fuentes se calculan 'oversampling' veces por muestra de salida y el decimador
+        // halfband vuelve a la frecuencia del host quitando todo lo que está por encima de ~20 kHz.
+        // El fundido de updateDuck se aplica ANTES del decimador: así la señal le llega ya suavizada (si se aplicara
+        // después, un cambio brusco dentro del decimador saldría ~20 muestras más tarde, con el volumen ya subiendo).
+        const float noiseSignal = frame.noiseComputed ? noise.processSample() : 0.0f;
+        std::array<float, maxOversampling> fastLeft {}, fastRight {};
+        for (size_t s = 0; s < static_cast<size_t> (oversampling); ++s)
+        {
+            mixModulatedSources (frame, noiseSignal, fastLeft[s], fastRight[s], stereo);
+            fastLeft[s] *= duckGain;
+            fastRight[s] *= duckGain;
+        }
+
+        const float noiseOut = frame.noiseAudible ? frame.noiseGain * noiseSignal * duckGain : 0.0f;
+        left += decimators[0].process (fastLeft[0], fastLeft[1]) + noiseOut;
+        right += noiseOut;
+        if (stereo)
+            right += decimators[1].process (fastRight[0], fastRight[1]);
+    }
+
+    // Suma de las 4 fuentes, cada una con su nivel. Sub y ruido son mono (van igual a los dos canales).
+    // Sin warp ni FM/RM: es exactamente la mezcla de la Fase 6.
+    void mixSources (const SourceFrame& frame, float& left, float& right, bool stereo) noexcept
+    {
+        for (size_t o = 0; o < oscillators.size(); ++o)
+        {
+            if (! frame.audible[o])
+                continue;
 
             if (stereo)
             {
                 float oscLeft = 0.0f, oscRight = 0.0f;
-                oscillator.processStereo (oscLeft, oscRight);
-                left += gain * oscLeft;
-                right += gain * oscRight;
+                oscillators[o].processStereo (oscLeft, oscRight);
+                left += frame.gains[o] * oscLeft;
+                right += frame.gains[o] * oscRight;
             }
             else
             {
-                left += gain * oscillator.processSample();
+                left += frame.gains[o] * oscillators[o].processSample();
             }
         }
 
         float centre = 0.0f;
-
-        SourceLevel::glide (subTuning, 12.0f * static_cast<float> (sourceSettings.sub.octave), smoothingCoef);
-        subOscillator.setPitchOffset (subTuning + globalPitch);
-        if (! subLevel.isSilent (sourceSettings.sub.enabled))
-        {
-            const float gain = subLevel.next (sourceSettings.sub.enabled, sourceSettings.sub.level, modulationOf (ModDestination::subLevel),
-                                              smoothingCoef);
-            centre += gain * subOscillator.processSample();
-        }
-
-        if (! noiseLevel.isSilent (sourceSettings.noise.enabled))
-        {
-            const float gain = noiseLevel.next (sourceSettings.noise.enabled, sourceSettings.noise.level,
-                                                modulationOf (ModDestination::noiseLevel), smoothingCoef);
-            centre += gain * noise.processSample();
-        }
+        if (frame.subAudible)
+            centre += frame.subGain * subOscillator.processSample();
+        if (frame.noiseAudible)
+            centre += frame.noiseGain * noise.processSample();
 
         left += centre;
         right += centre;
+    }
+
+    // Una muestra (sobremuestreada) con FM y ring mod entre fuentes. El ruido llega ya calculado (a la frecuencia
+    // del host) y se suma a la salida después del decimador.
+    void mixModulatedSources (const SourceFrame& frame, float noiseSignal, float& left, float& right, bool stereo) noexcept
+    {
+        const float subSignal = frame.subComputed ? subOscillator.processSample() : 0.0f;
+
+        // Si A escucha a B, B se calcula primero y A recibe su muestra actual. (Si además B escucha a A, B recibe la
+        // anterior de A: un retraso de una muestra sobremuestreada, inaudible.)
+        const size_t first = fmSourceOf (appliedPaths.fm[0]) == FmSource::otherOscillator ? 1 : 0;
+        for (const size_t o : { first, 1 - first })
+        {
+            if (! frame.computed[o])
+                continue;
+
+            const FmMode mode = appliedPaths.fm[o];
+            float modulator = 0.0f;
+            switch (fmSourceOf (mode))
+            {
+                case FmSource::otherOscillator: modulator = lastOutputs[1 - o]; break;
+                case FmSource::sub: modulator = subSignal; break;
+                case FmSource::noise: modulator = noiseSignal; break;
+                case FmSource::none: break;
+            }
+
+            auto& oscillator = oscillators[o];
+            if (isFrequencyModulation (mode))
+                oscillator.setPhaseModulation (frame.fmDepth[o] * modulator);
+
+            float oscLeft = 0.0f, oscRight = 0.0f;
+            if (stereo)
+            {
+                oscillator.processStereo (oscLeft, oscRight);
+                lastOutputs[o] = 0.5f * (oscLeft + oscRight);
+            }
+            else
+            {
+                oscLeft = oscRight = lastOutputs[o] = oscillator.processSample();
+            }
+
+            // Ring mod con amount: (1 − a)·x + a·x·m. Con a = 1 es la multiplicación pura (x·m): la onda original
+            // desaparece y quedan la suma y la diferencia de frecuencias. Con valores intermedios es modulación de
+            // amplitud (AM): la original sigue sonando con las dos "bandas laterales" alrededor.
+            if (isRingModulation (mode))
+            {
+                const float ring = 1.0f + frame.fmDepth[o] * (modulator - 1.0f);
+                oscLeft *= ring;
+                oscRight *= ring;
+            }
+
+            if (frame.audible[o])
+            {
+                left += frame.gains[o] * oscLeft;
+                right += frame.gains[o] * oscRight;
+            }
+        }
+
+        if (frame.subAudible)
+        {
+            left += frame.subGain * subSignal;
+            right += frame.subGain * subSignal;
+        }
+    }
+
+    // Aplica los modos de warp y FM/RM. Sin ninguno, las fuentes corren a la frecuencia del host como en la Fase 6.
+    // Con alguno, a 2×: a 48 kHz, las bandas laterales de la FM y los armónicos que crean los warps tienen sitio
+    // hasta 76 kHz antes de reflejarse hacia lo audible, y el decimador quita lo que pase de 20 kHz.
+    //
+    // Límite de los armónicos de las tablas: el de siempre (el mismo brillo que sin warp), pero dejando siempre un
+    // margen de ~2.7× hasta la frecuencia que se reflejaría hacia lo audible (2·fs − 20 kHz). La FM y los warps crean
+    // "colas" de armónicos por encima de la velocidad máxima de lectura: caen en ese margen y el decimador las quita.
+    // El margen también cubre el ring mod, donde suenan las SUMAS de frecuencias de las dos ondas.
+    //
+    // El ruido no se sobremuestrea: es ruido, no tiene armónicos que se reflejen. Sigue a la frecuencia del host
+    // (suena idéntico) y como modulador se repite en las dos muestras internas.
+    void applyPathConfig (const SourcePathConfig& config) noexcept
+    {
+        appliedPaths = config;
+        complexPath = config.isComplex();
+        oversampling = complexPath ? maxOversampling : 1;
+
+        const double rate = baseSampleRate * oversampling;
+        const double harmonicLimit =
+            complexPath ? std::min (dsp::WavetableOscillator::defaultHarmonicLimit (baseSampleRate),
+                                    foldMargin * (rate - dsp::HalfbandDecimator::passbandEdge (baseSampleRate)))
+                        : 0.0;
+        for (size_t o = 0; o < oscillators.size(); ++o)
+        {
+            oscillators[o].setSampleRate (rate, harmonicLimit);
+            oscillators[o].setWarp (config.warp[o], isFrequencyModulation (config.fm[o]));
+        }
+        subOscillator.setSampleRate (rate, harmonicLimit);
+        for (auto& decimator : decimators)
+            decimator.reset();
+        lastOutputs = {};
+    }
+
+    // Cambio de modo con la nota sonando: 2.5 ms bajando, el cambio en silencio, 2.5 ms subiendo. Un corte tan corto
+    // no se percibe como hueco; el salto de forma de onda (o de camino de cálculo) sí se oiría como clic.
+    // Si el camino viejo pasaba por el decimador, antes de cambiar se espera a que se vacíe (1.6 ms a 44.1 kHz,
+    // 0.8 ms a 48 kHz): lo que todavía estaba dentro sale entero, en vez de cortarse.
+    void updateDuck() noexcept
+    {
+        switch (duckStage)
+        {
+            case DuckStage::fadingOut:
+                duckGain = std::max (0.0f, duckGain - duckStep);
+                if (duckGain == 0.0f)
+                {
+                    duckStage = DuckStage::silent;
+                    silentSamples = complexPath ? decimators[0].getNumTaps() / 2 + 1 : 0;
+                }
+                break;
+            case DuckStage::silent:
+                if (--silentSamples < 0)
+                {
+                    applyPathConfig (SourcePathConfig::from (sourceSettings));
+                    duckStage = DuckStage::fadingIn;
+                }
+                break;
+            case DuckStage::fadingIn:
+                duckGain = std::min (1.0f, duckGain + duckStep);
+                if (duckGain == 1.0f)
+                    duckStage = DuckStage::none;
+                break;
+            case DuckStage::none:
+                break;
+        }
     }
 
     void updateFilterCutoff() noexcept
@@ -519,6 +787,9 @@ private:
     static constexpr double amountSmoothingSeconds = 0.005;
     static constexpr double controllerSmoothingSeconds = 0.01;
     static constexpr double lfoSmoothingSeconds = 0.001;
+    static constexpr double duckSeconds = 0.0025;
+    static constexpr int maxOversampling = 2;
+    static constexpr double foldMargin = 0.37; // límite de armónicos / frecuencia que se reflejaría hacia lo audible
 
     std::array<dsp::WavetableOscillator, numOscillators> oscillators;
     dsp::WavetableOscillator subOscillator;
@@ -529,6 +800,20 @@ private:
     std::array<float, numOscillators> tuning {}; // semitonos, suavizados
     float subTuning = -12.0f;
     float smoothingCoef = 1.0f; // 5 ms, para niveles y afinación
+
+    // Fase 7: warp, FM/RM y el camino sobremuestreado.
+    enum class DuckStage { none, fadingOut, silent, fadingIn };
+    SourcePathConfig appliedPaths;
+    bool complexPath = false;
+    int oversampling = 1;
+    double baseSampleRate = 44100.0;
+    std::array<dsp::HalfbandDecimator, 2> decimators; // izquierdo y derecho
+    std::array<float, numOscillators> warpKnobs {}, fmKnobs {}; // perillas suavizadas
+    std::array<float, numOscillators> lastOutputs {};           // última muestra de cada oscilador (para FM/RM)
+    DuckStage duckStage = DuckStage::none;
+    float duckGain = 1.0f;
+    float duckStep = 1.0f;
+    int silentSamples = 0;
 
     dsp::Filter filter;
     bool filterStereo = false; // el filtro está procesando el canal derecho

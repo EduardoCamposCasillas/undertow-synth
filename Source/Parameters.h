@@ -105,6 +105,20 @@ inline constexpr const char* noiseOn = "noiseOn";
 inline constexpr const char* noiseLevel = "noiseLevel";
 inline constexpr const char* noiseColor = "noiseColor";
 
+// Fase 7: warp y FM/RM de cada oscilador.
+struct OscillatorWarpIds
+{
+    const char* warpMode;
+    const char* warpAmount;
+    const char* fmMode;
+    const char* fmAmount;
+};
+
+inline constexpr std::array<OscillatorWarpIds, 2> oscillatorWarps { {
+    { "oscAWarpMode", "oscAWarpAmount", "oscAFmMode", "oscAFmAmount" },
+    { "oscBWarpMode", "oscBWarpAmount", "oscBFmMode", "oscBFmAmount" },
+} };
+
 // Versión con la que se introdujeron los parámetros (la usa VST3 para compatibilidad hacia atrás).
 inline constexpr int versionHint = 1;
 // Los parámetros añadidos en una versión posterior llevan un número mayor.
@@ -112,4 +126,5 @@ inline constexpr int versionHintOscillator = 2;
 inline constexpr int versionHintFilter = 3;
 inline constexpr int versionHintModulation = 4;
 inline constexpr int versionHintSources = 5;
+inline constexpr int versionHintWarp = 6;
 } // namespace undertow::params

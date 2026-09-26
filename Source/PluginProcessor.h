@@ -8,8 +8,9 @@
 #include "synth/VoiceManager.h"
 #include "synth/WavetableBank.h"
 
-// Fase 6: sintetizador polifónico estéreo: 2 osciladores wavetable con unison + sub + ruido → filtro ZDF →
-// envolvente ADSR de amplitud, con 2 envolventes y 2 LFOs de modulación conectados mediante una matriz de 8 rutas.
+// Fase 7: sintetizador polifónico estéreo: 2 osciladores wavetable con unison, warp y FM/RM + sub + ruido →
+// filtro ZDF → envolvente ADSR de amplitud, con 2 envolventes y 2 LFOs de modulación conectados mediante una
+// matriz de 8 rutas.
 class UndertowAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -124,6 +125,14 @@ private:
         std::atomic<float>* width = nullptr;
     };
     std::array<OscillatorParams, undertow::synth::numOscillators> oscillatorParams {};
+    struct OscillatorWarpParams
+    {
+        std::atomic<float>* warpMode = nullptr;
+        std::atomic<float>* warpAmount = nullptr;
+        std::atomic<float>* fmMode = nullptr;
+        std::atomic<float>* fmAmount = nullptr;
+    };
+    std::array<OscillatorWarpParams, undertow::synth::numOscillators> oscillatorWarpParams {};
     std::atomic<float>* subOnParam = nullptr;
     std::atomic<float>* subShapeParam = nullptr;
     std::atomic<float>* subOctaveParam = nullptr;

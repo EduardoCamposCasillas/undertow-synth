@@ -133,6 +133,12 @@ UndertowAudioProcessor::UndertowAudioProcessor()
                                 get (ids.semitones), get (ids.fine),   get (ids.level),    get (ids.pan),
                                 get (ids.unison), get (ids.detune),    get (ids.width) };
     }
+    for (size_t o = 0; o < oscillatorWarpParams.size(); ++o)
+    {
+        const auto& ids = id::oscillatorWarps[o];
+        oscillatorWarpParams[o] = { parameters.getRawParameterValue (ids.warpMode), parameters.getRawParameterValue (ids.warpAmount),
+                                    parameters.getRawParameterValue (ids.fmMode), parameters.getRawParameterValue (ids.fmAmount) };
+    }
     subOnParam = parameters.getRawParameterValue (id::subOn);
     subShapeParam = parameters.getRawParameterValue (id::subShape);
     subOctaveParam = parameters.getRawParameterValue (id::subOctave);
@@ -373,6 +379,29 @@ juce::AudioProcessorValueTreeState::ParameterLayout UndertowAudioProcessor::crea
                                                              juce::NormalisableRange<float> (0.0f, 1.0f),
                                                              sourceDefaults.noise.color, percentAttributes()));
 
+    // --- Fase 7: warp y FM/RM. Por defecto None/Off: un proyecto de la Fase 6 suena igual. ---
+    // El orden de las opciones se guarda (índice): solo añadir al final.
+    constexpr int v7 = id::versionHintWarp;
+    for (size_t o = 0; o < id::oscillatorWarps.size(); ++o)
+    {
+        const auto& ids = id::oscillatorWarps[o];
+        const auto& d = sourceDefaults.oscillators[o];
+        const juce::String name = juce::String ("Osc ") + (o == 0 ? "A " : "B ");
+
+        layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids.warpMode, v7 }, name + "Warp",
+                                                                  toStringArray (undertow::dsp::warpModeNames),
+                                                                  static_cast<int> (d.warpMode)));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ids.warpAmount, v7 }, name + "Warp Amount",
+                                                                 juce::NormalisableRange<float> (0.0f, 1.0f), d.warpAmount,
+                                                                 percentAttributes()));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ids.fmMode, v7 }, name + "FM/RM",
+            toStringArray (o == 0 ? synth::fmModeNamesA : synth::fmModeNamesB), static_cast<int> (d.fmMode)));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ids.fmAmount, v7 }, name + "FM/RM Amount",
+                                                                 juce::NormalisableRange<float> (0.0f, 1.0f), d.fmAmount,
+                                                                 percentAttributes()));
+    }
+
     return layout;
 }
 
@@ -435,6 +464,12 @@ undertow::synth::SourceSettings UndertowAudioProcessor::readSourceSettings() con
         osc.unison = static_cast<int> (p.unison->load());
         osc.detune = p.detune->load();
         osc.width = p.width->load();
+
+        const auto& w = oscillatorWarpParams[o];
+        osc.warpMode = choiceToEnum<undertow::dsp::WarpMode> (w.warpMode);
+        osc.warpAmount = w.warpAmount->load();
+        osc.fmMode = choiceToEnum<synth::FmMode> (w.fmMode);
+        osc.fmAmount = w.fmAmount->load();
     }
 
     settings.sub = { subOnParam->load() >= 0.5f, choiceToEnum<synth::SubShape> (subShapeParam),

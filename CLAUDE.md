@@ -95,7 +95,7 @@ Source/
 - [x] Fase 4 — Filtros ZDF/TPT: LP/HP/BP 12 y 24 dB, resonancia, drive, key tracking.
 - [x] Fase 5 — Modulación: 2 envolventes extra, LFOs sincronizados al tempo, matriz de modulación.
 - [x] Fase 6 — Segundo oscilador, sub, ruido, unison (hasta 16 voces) con detune y ancho estéreo.
-- [ ] Fase 7 — FM y warp de osciladores: FM/PM entre osciladores (OSC B → OSC A, ruido → OSC, sub → OSC),
+- [x] Fase 7 — FM y warp de osciladores: FM/PM entre osciladores (OSC B → OSC A, ruido → OSC, sub → OSC),
       ring mod, y modos de warp (bend, sync, PWM, mirror, quantize/bitcrush). Todo modulable desde la matriz
       y con control de aliasing (oversampling o técnicas band-limited donde haga falta).
 - [ ] Fase 8 — Efectos internos: distorsión (con oversampling), chorus, delay, reverb.
@@ -235,4 +235,42 @@ Fase 6 COMPLETADA (2026-09-25). Probada por el usuario en FL Studio: funciona bi
 - Límites conocidos: el unison al máximo es caro (optimizar con SIMD en Fase 11). La suma mono de un unison abierto
   pierde hasta −3 dB en las copias de los lados (ley de paneo equal power; explicado en APRENDIZAJE.md).
 
-Siguiente: Fase 7 (FM y warp), pendiente de que el usuario la inicie.
+Fase 7 COMPLETADA (2026-09-25). Probada por el usuario en FL Studio: funciona.
+- `dsp/Warp.h`: `WarpMode` (orden guardado: None, Sync, Bend +, Bend -, PWM, Mirror, Quantize, Bitcrush) y
+  `Warp::make` (amount → Sync ratio 2^(4a) = 1..16; Bend pendiente 2^(3a) = 1..8 con curva hiperbólica
+  s·x/((s−1)x+1) en mitades simétricas; PWM ancho 1 − a·15/16; Quantize 2^(1+7(1−a)) escalones leyendo el centro del
+  tramo; Bitcrush 2^(7(1−a)) niveles/unidad; Quantize/Bitcrush entran en el primer 10 %). Amount 0 = onda exacta.
+  `warpedValue()` la comparten el oscilador y la GUI.
+- `WavetableOscillator`: camino `renderWarped` (sin warp ni FM se usa el de la Fase 6, intacto). FM = PM
+  (`setPhaseModulation`, en ciclos); primero la FM y después el warp. Mipmap para la lectura MÁS RÁPIDA (incluye la FM;
+  pico con release de 20 ms para no conmutar niveles al ritmo del modulador; se recalcula si cambia > 0.1 %).
+  polyBLEP + polyBLAMP de 4 muestras (B-spline cúbica; salida retrasada 2 muestras): Sync (salto + quiebre), PWM y
+  Mirror (quiebres), Quantize (saltos), Bitcrush (un salto por nivel, cruce estimado con Hermite + Newton acotado).
+  `setSampleRate (rate, harmonicLimit)`, `defaultHarmonicLimit()`.
+- `dsp/HalfbandDecimator.h`: FIR halfband con ventana de Kaiser, 100 dB (139 taps a 44.1 kHz, 79 a 48 kHz; retardo
+  34.5 / 19.5 muestras). Banda de paso ±0.0001 dB hasta 20 kHz; rechazo medido −100 dB.
+- Voz: `SourcePathConfig` = modos de warp y FM/RM de A y B. Con alguno ≠ None/Off, osciladores y sub corren a 2×
+  (también a 88.2/96 kHz) con límite de armónicos min(normal, 0.37·(2·fs − 20 kHz)) y decimador L/R; el ruido sigue a
+  1× (idéntico), se suma después del decimador y como modulador se repite en las dos muestras internas.
+  `FmMode` (orden guardado): Off, FM: otro osc / Sub / Noise, RM: otro osc / Sub / Noise. La moduladora es la señal
+  cruda (antes de Level y aunque esté apagada). Si A escucha a B, B se calcula primero. FM: 2 ciclos·a² (β máx 4π);
+  RM: (1 − a) + a·m. Cambiar un modo = fundido de 2.5 ms (antes del decimador) → espera a vaciar el decimador →
+  aplicar → 2.5 ms de subida. Warp/FM Amount suavizados 5 ms + modulación.
+- Destinos nuevos (al final): Osc A Warp, Osc B Warp, Osc A FM/RM, Osc B FM/RM (100 % = toda la perilla).
+- Parámetros nuevos (versionHint 6; IDs en `Parameters.h`, `params::oscillatorWarps[]`): oscXWarpMode, oscXWarpAmount,
+  oscXFmMode, oscXFmAmount. Por defecto None / 0 / Off / 0: un proyecto de la Fase 6 suena igual.
+- GUI: pestaña "Warp y FM" (A | B) con visor `gui/WarpDisplay.h` (original en gris, deformada en naranja), selector y
+  Amount para Warp y para FM/RM. Mismo tamaño de ventana (870×602).
+- Tests (11 nuevos; `UndertowTests --fase7` corre solo estos y `--verbose` imprime el detalle por nota): identidad con
+  amount 0 y velocidad acotada de los warps; decimador (±0.0001 dB, −100 dB); FM = Bessel (0.11 dB; con β = 2.405 la
+  portadora a −75 dB); RM (−6.02 dB exactos, portadora −128 dB); modo con amount 0 = camino normal (0.0001 dB, ruido
+  0.000 dB); alias C4–C7 a 4 sample rates: Sync −78, Bend + −76, Bend − −62, PWM −81, Mirror −92, Quantize −82,
+  Bitcrush −53, FM −72 dB (sync ingenuo: −27 dB); cambiar de modo sin clics; destinos por la matriz; extremos sin NaN.
+  CPU (48 kHz): 8 notas con Sync ≈ 9 %; FM de 2 osciladores ≈ 14 %; Sync con 7 copias ≈ 20 %; peor caso
+  (16 notas, 2 × 16 copias, Mirror + FM/RM) ≈ 300 % de un núcleo.
+- Release con 0 warnings (build limpio); pluginval strictness 10 (con tests de GUI): SUCCESS.
+- Límites conocidos: Bend − al 100 % (−62 dB: su curva frena y acelera de golpe); Bitcrush de una sierra (−53 dB: pulsos
+  más cortos que una muestra cerca del salto); C8 con amounts extremos (−53 a −79 dB). El camino con warp/FM cuesta 2–4×
+  (SIMD en Fase 11). El drive del filtro sigue sin oversampling (Fase 8).
+
+Siguiente: Fase 8 (efectos), pendiente de que el usuario la inicie.

@@ -41,10 +41,12 @@ enum class ModDestination
 {
     none, oscAPosition, oscAPitch, filterCutoff, filterResonance, filterDrive, volume,
     // Fase 6
-    oscBPosition, oscBPitch, oscALevel, oscBLevel, subLevel, noiseLevel, oscADetune, oscBDetune, globalPitch
+    oscBPosition, oscBPitch, oscALevel, oscBLevel, subLevel, noiseLevel, oscADetune, oscBDetune, globalPitch,
+    // Fase 7
+    oscAWarp, oscBWarp, oscAFm, oscBFm
 };
 
-inline constexpr std::array<const char*, 16> modDestinationNames {
+inline constexpr std::array<const char*, 20> modDestinationNames {
     "None",
     "Osc A Position",
     "Osc A Pitch",
@@ -61,6 +63,10 @@ inline constexpr std::array<const char*, 16> modDestinationNames {
     "Osc A Detune",
     "Osc B Detune",
     "Global Pitch", // mueve a la vez Osc A, Osc B y Sub (la escala de los Pitch: 100 % = ±24 semitonos)
+    "Osc A Warp",   // amount del warp (100 % = toda la perilla)
+    "Osc B Warp",
+    "Osc A FM/RM",  // amount de la FM o del ring mod (100 % = toda la perilla)
+    "Osc B FM/RM",
 };
 
 inline constexpr int numModSources = static_cast<int> (modSourceNames.size());

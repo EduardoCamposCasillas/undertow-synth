@@ -46,17 +46,19 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
     // --- Pestañas ---
     // Los literales con tildes se pasan con fromUTF8: un const char* suelto JUCE lo lee como Latin-1.
     modulationTab.setButtonText (juce::String::fromUTF8 ("Modulaci\xc3\xb3n"));
-    for (auto* tab : { &oscillatorTab, &soundTab, &modulationTab })
+    for (auto* tab : { &oscillatorTab, &warpTab, &soundTab, &modulationTab })
     {
         tab->setClickingTogglesState (true);
         tab->setRadioGroupId (1);
         tab->setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff2b7a8c)); // la pestaña activa se resalta
         addAndMakeVisible (tab);
     }
-    oscillatorTab.onClick = [this] { showPage (0); };
-    soundTab.onClick = [this] { showPage (1); };
-    modulationTab.onClick = [this] { showPage (2); };
+    oscillatorTab.onClick = [this] { showPage (Page::oscillators); };
+    warpTab.onClick = [this] { showPage (Page::warp); };
+    soundTab.onClick = [this] { showPage (Page::sound); };
+    modulationTab.onClick = [this] { showPage (Page::modulation); };
     addChildComponent (oscillatorPage);
+    addChildComponent (warpPage);
     addChildComponent (soundPage);
     addChildComponent (modulationPage);
 
@@ -103,6 +105,31 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
     noiseOnAttachment = std::make_unique<ButtonAttachment> (apvts, id::noiseOn, noiseOnButton);
     setUpKnob (noiseKnobs[0], oscillatorPage, id::noiseLevel, "Level", oscillatorKnobWidth);
     setUpKnob (noiseKnobs[1], oscillatorPage, id::noiseColor, "Color", oscillatorKnobWidth);
+
+    // ================= Página "Warp y FM": una columna por oscilador =================
+    for (size_t o = 0; o < warps.size(); ++o)
+    {
+        auto& warp = warps[o];
+        const auto& ids = id::oscillatorWarps[o];
+        warp.group.setText (o == 0 ? "Oscilador A" : "Oscilador B");
+        warpPage.addAndMakeVisible (warp.group);
+        warpPage.addAndMakeVisible (warp.display);
+
+        warp.warpLabel.setText ("Warp", juce::dontSendNotification);
+        warp.fmLabel.setText ("FM / RM", juce::dontSendNotification);
+        for (auto* label : { &warp.warpLabel, &warp.fmLabel })
+        {
+            label->setJustificationType (juce::Justification::centred);
+            warpPage.addAndMakeVisible (label);
+        }
+        setUpComboBox (warp.warpBox, warpPage, ids.warpMode, warp.warpAttachment);
+        setUpComboBox (warp.fmBox, warpPage, ids.fmMode, warp.fmAttachment);
+        setUpKnob (warp.warpKnob, warpPage, ids.warpAmount, "Amount", knobWidth);
+        setUpKnob (warp.fmKnob, warpPage, ids.fmAmount, "Amount", knobWidth);
+
+        warp.warpModeParam = apvts.getRawParameterValue (ids.warpMode);
+        warp.warpAmountParam = apvts.getRawParameterValue (ids.warpAmount);
+    }
 
     // ================= Página "Filtro y Amp": filtro, Env 1 y voz =================
     soundPage.addAndMakeVisible (filterGroup);
@@ -197,7 +224,7 @@ UndertowAudioProcessorEditor::UndertowAudioProcessorEditor (UndertowAudioProcess
     setSize (pageWidth + 2 * groupPadding, pageHeight + headerHeight + 3 * groupPadding);
 
     oscillatorTab.setToggleState (true, juce::dontSendNotification);
-    showPage (0);
+    showPage (Page::oscillators);
     timerCallback(); // estado inicial (p. ej. Rate o Division visibles según Sync) sin esperar al primer tick
     startTimerHz (30); // la GUI consulta el estado; el audio nunca espera a la GUI
 }
@@ -207,11 +234,12 @@ UndertowAudioProcessorEditor::~UndertowAudioProcessorEditor()
     stopTimer();
 }
 
-void UndertowAudioProcessorEditor::showPage (int page)
+void UndertowAudioProcessorEditor::showPage (Page page)
 {
-    oscillatorPage.setVisible (page == 0);
-    soundPage.setVisible (page == 1);
-    modulationPage.setVisible (page == 2);
+    oscillatorPage.setVisible (page == Page::oscillators);
+    warpPage.setVisible (page == Page::warp);
+    soundPage.setVisible (page == Page::sound);
+    modulationPage.setVisible (page == Page::modulation);
 }
 
 void UndertowAudioProcessorEditor::setUpKnob (Knob& knob, juce::Component& page, const char* parameterId,
@@ -260,6 +288,14 @@ void UndertowAudioProcessorEditor::timerCallback()
     const auto& bank = processor.getWavetableBank();
     for (auto& osc : oscillators)
         osc.display.setWavetable (&bank.get (static_cast<int> (osc.tableParam->load())), osc.positionParam->load());
+    for (size_t o = 0; o < warps.size(); ++o)
+    {
+        const auto& osc = oscillators[o];
+        auto& warp = warps[o];
+        warp.display.setState (&bank.get (static_cast<int> (osc.tableParam->load())), osc.positionParam->load(),
+                               static_cast<undertow::dsp::WarpMode> (static_cast<int> (warp.warpModeParam->load())),
+                               warp.warpAmountParam->load());
+    }
 
     const auto filter = processor.readFilterSettings();
     filterDisplay.setResponse (filter.parameters, filter.enabled, processor.getCurrentSampleRate());
@@ -296,10 +332,12 @@ void UndertowAudioProcessorEditor::resized()
     header.removeFromRight (groupPadding);
     modulationTab.setBounds (header.removeFromRight (110).reduced (0, 2));
     soundTab.setBounds (header.removeFromRight (110).reduced (0, 2));
+    warpTab.setBounds (header.removeFromRight (110).reduced (0, 2));
     oscillatorTab.setBounds (header.removeFromRight (110).reduced (0, 2));
     area.removeFromTop (groupPadding);
 
     oscillatorPage.setBounds (area);
+    warpPage.setBounds (area);
     soundPage.setBounds (area);
     modulationPage.setBounds (area);
 
@@ -351,6 +389,34 @@ void UndertowAudioProcessorEditor::resized()
         };
         layoutSmallGroup (subGroup, subOnButton, &subShapeBox, subKnobs);
         layoutSmallGroup (noiseGroup, noiseOnButton, nullptr, noiseKnobs);
+    }
+
+    // ================= Página "Warp y FM" =================
+    // Dos columnas (A | B): arriba el dibujo del warp; abajo Warp y FM/RM, cada uno con su selector y su perilla.
+    {
+        auto page = warpPage.getLocalBounds();
+        const int halfWidth = (page.getWidth() - groupPadding) / 2;
+        for (auto& warp : warps)
+        {
+            auto groupArea = page.removeFromLeft (halfWidth);
+            page.removeFromLeft (groupPadding);
+            warp.group.setBounds (groupArea);
+            auto inner = innerOf (groupArea);
+
+            auto controls = inner.removeFromBottom (knobHeight + 20 + 28 + 26);
+            inner.removeFromBottom (groupPadding);
+            warp.display.setBounds (inner);
+
+            const int columnWidth = controls.getWidth() / 2;
+            const auto layoutColumn = [] (juce::Rectangle<int> column, juce::Label& label, juce::ComboBox& box, Knob& knob) {
+                label.setBounds (column.removeFromTop (20));
+                box.setBounds (column.removeFromTop (28).reduced (8, 0));
+                column.removeFromTop (6);
+                layoutKnob (knob, column.withSizeKeepingCentre (knobWidth, column.getHeight()));
+            };
+            layoutColumn (controls.removeFromLeft (columnWidth), warp.warpLabel, warp.warpBox, warp.warpKnob);
+            layoutColumn (controls, warp.fmLabel, warp.fmBox, warp.fmKnob);
+        }
     }
 
     // ================= Página "Filtro y Amp" =================

@@ -8,13 +8,14 @@
 
 #include "gui/FilterResponseDisplay.h"
 #include "gui/LfoDisplay.h"
+#include "gui/WarpDisplay.h"
 #include "gui/WavetableDisplay.h"
 #include "synth/Modulation.h"
 #include "synth/SourceSettings.h"
 
 class UndertowAudioProcessor;
 
-// GUI funcional: osciladores, sub, ruido, filtro, envolventes, LFOs, matriz de modulación y voz.
+// GUI funcional: osciladores, warp y FM, sub, ruido, filtro, envolventes, LFOs, matriz de modulación y voz.
 // La GUI profesional (escalable, arrastrar para modular) llega en la Fase 9.
 class UndertowAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
@@ -26,8 +27,10 @@ public:
     void resized() override;
 
 private:
+    enum class Page { oscillators, warp, sound, modulation };
+
     void timerCallback() override;
-    void showPage (int page);
+    void showPage (Page page);
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
@@ -52,9 +55,10 @@ private:
 
     UndertowAudioProcessor& processor;
 
-    // Tres páginas del mismo tamaño que la ventana de la Fase 4 (cabe en pantallas pequeñas con escalado).
-    juce::Component oscillatorPage, soundPage, modulationPage;
+    // Cuatro páginas del mismo tamaño que la ventana de la Fase 4 (cabe en pantallas pequeñas con escalado).
+    juce::Component oscillatorPage, warpPage, soundPage, modulationPage;
     juce::TextButton oscillatorTab { "Osciladores" };
+    juce::TextButton warpTab { "Warp y FM" };
     juce::TextButton soundTab { "Filtro y Amp" };
     juce::TextButton modulationTab;
     std::array<Knob, numEnvelopeKnobs + numVoiceKnobs> knobs;
@@ -75,6 +79,20 @@ private:
         std::atomic<float>* positionParam = nullptr;
     };
     std::array<OscillatorControls, undertow::synth::numOscillators> oscillators;
+
+    // --- Fase 7: warp y FM/RM de cada oscilador ---
+    struct WarpControls
+    {
+        juce::GroupComponent group;
+        undertow::gui::WarpDisplay display;
+        juce::Label warpLabel, fmLabel;
+        juce::ComboBox warpBox, fmBox;
+        std::unique_ptr<ComboBoxAttachment> warpAttachment, fmAttachment;
+        Knob warpKnob, fmKnob;
+        std::atomic<float>* warpModeParam = nullptr;
+        std::atomic<float>* warpAmountParam = nullptr;
+    };
+    std::array<WarpControls, undertow::synth::numOscillators> warps;
 
     juce::GroupComponent subGroup { {}, "Sub" };
     juce::ToggleButton subOnButton { "On" };

@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <numbers>
 #include <random>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -25,6 +26,7 @@
 namespace
 {
 int failures = 0;
+bool verbose = false; // --verbose: detalle de las mediciones largas
 
 #define CHECK(condition)                                                                   \
     do                                                                                     \
@@ -2000,53 +2002,55 @@ void testUnisonMipmapHasNoAlias()
     CHECK (worst < -85.0);
 }
 
+// Mide el coste de 3 s de audio a 48 kHz con 'notes' notas sonando y el filtro encendido.
+void measureVoiceCpu (const char* label, int notes, const SourceSettings& sources, bool modulated)
+{
+    VoiceManager manager;
+    manager.prepare (48000.0);
+    manager.setPolyphony (16);
+    manager.setSourceSettings (sources);
+    manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
+    manager.setFilterSettings ({ true, { FilterType::lowPass, FilterSlope::db24, 800.0f, 0.5f, 0.3f }, 0.5f });
+    if (modulated)
+    {
+        ModulationSettings settings;
+        settings.lfos[0] = { LfoShape::sine, LfoMode::retrigger, false, 6.0f, 5 };
+        settings.slots[0] = { ModSource::lfo1, ModDestination::filterCutoff, 0.3f };
+        settings.slots[1] = { ModSource::lfo1, ModDestination::oscADetune, 0.2f };
+        settings.slots[2] = { ModSource::env2, ModDestination::oscBPosition, 1.0f };
+        settings.slots[3] = { ModSource::lfo1, ModDestination::globalPitch, 0.01f };
+        manager.setModulationSettings (settings);
+    }
+    for (int n = 0; n < notes; ++n)
+        manager.noteOn (40 + n, 0.8f);
+
+    const int blockSize = 256;
+    const int numBlocks = 48000 * 3 / blockSize;
+    std::vector<float> left (blockSize), right (blockSize);
+    float peak = 0.0f;
+    bool finite = true;
+    const auto start = std::chrono::steady_clock::now();
+    for (int b = 0; b < numBlocks; ++b)
+    {
+        std::fill (left.begin(), left.end(), 0.0f);
+        std::fill (right.begin(), right.end(), 0.0f);
+        manager.render (left.data(), right.data(), blockSize);
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const auto s = static_cast<size_t> (i);
+            finite = finite && std::isfinite (left[s]) && std::isfinite (right[s]);
+            peak = std::max ({ peak, std::abs (left[s]), std::abs (right[s]) });
+        }
+    }
+    const double seconds = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
+    std::printf ("  %-58s %5.1f %% de un núcleo (pico %.2f)\n", label, 100.0 * seconds / 3.0, static_cast<double> (peak));
+    CHECK (finite);
+    CHECK (peak < 20.0f);
+}
+
 void testUnisonCpuCost()
 {
     std::printf ("Coste de CPU con unison (48 kHz)\n");
-
-    const auto measure = [] (const char* label, int notes, SourceSettings sources, bool modulated) {
-        VoiceManager manager;
-        manager.prepare (48000.0);
-        manager.setPolyphony (16);
-        manager.setSourceSettings (sources);
-        manager.setEnvelopeParameters ({ 0.001f, 0.1f, 1.0f, 0.1f });
-        manager.setFilterSettings ({ true, { FilterType::lowPass, FilterSlope::db24, 800.0f, 0.5f, 0.3f }, 0.5f });
-        if (modulated)
-        {
-            ModulationSettings settings;
-            settings.lfos[0] = { LfoShape::sine, LfoMode::retrigger, false, 6.0f, 5 };
-            settings.slots[0] = { ModSource::lfo1, ModDestination::filterCutoff, 0.3f };
-            settings.slots[1] = { ModSource::lfo1, ModDestination::oscADetune, 0.2f };
-            settings.slots[2] = { ModSource::env2, ModDestination::oscBPosition, 1.0f };
-            settings.slots[3] = { ModSource::lfo1, ModDestination::globalPitch, 0.01f };
-            manager.setModulationSettings (settings);
-        }
-        for (int n = 0; n < notes; ++n)
-            manager.noteOn (40 + n, 0.8f);
-
-        const int blockSize = 256;
-        const int numBlocks = 48000 * 3 / blockSize;
-        std::vector<float> left (blockSize), right (blockSize);
-        float peak = 0.0f;
-        bool finite = true;
-        const auto start = std::chrono::steady_clock::now();
-        for (int b = 0; b < numBlocks; ++b)
-        {
-            std::fill (left.begin(), left.end(), 0.0f);
-            std::fill (right.begin(), right.end(), 0.0f);
-            manager.render (left.data(), right.data(), blockSize);
-            for (int i = 0; i < blockSize; ++i)
-            {
-                const auto s = static_cast<size_t> (i);
-                finite = finite && std::isfinite (left[s]) && std::isfinite (right[s]);
-                peak = std::max ({ peak, std::abs (left[s]), std::abs (right[s]) });
-            }
-        }
-        const double seconds = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
-        std::printf ("  %-58s %5.1f %% de un núcleo (pico %.2f)\n", label, 100.0 * seconds / 3.0, static_cast<double> (peak));
-        CHECK (finite);
-        CHECK (peak < 20.0f);
-    };
 
     SourceSettings sources;
     sources.subTable = &factoryBank().get (0);
@@ -2054,87 +2058,705 @@ void testUnisonCpuCost()
     sources.oscillators[0].position = 2.0f / 3.0f;
     sources.oscillators[1].table = &factoryBank().get (4);
 
-    measure ("8 notas, Osc A sierra sin unison (referencia)", 8, sources, false);
+    measureVoiceCpu ("8 notas, Osc A sierra sin unison (referencia)", 8, sources, false);
 
     sources.oscillators[0].unison = 7;
     sources.oscillators[0].detune = 0.4f;
-    measure ("8 notas, supersaw: Osc A con 7 copias", 8, sources, false);
+    measureVoiceCpu ("8 notas, supersaw: Osc A con 7 copias", 8, sources, false);
 
     sources.oscillators[0].unison = 16;
     sources.oscillators[1].enabled = true;
     sources.oscillators[1].unison = 16;
     sources.sub.enabled = true;
     sources.noise.enabled = true;
-    measure ("16 notas, A y B con 16 copias, sub, ruido, 4 rutas (peor caso)", 16, sources, true);
+    measureVoiceCpu ("16 notas, A y B con 16 copias, sub, ruido, 4 rutas (peor caso)", 16, sources, true);
+}
+
+// --- Fase 7: warp, FM y ring mod -----------------------------------------------------------------
+
+using undertow::dsp::HalfbandDecimator;
+using undertow::dsp::Warp;
+using undertow::dsp::WarpMode;
+using undertow::synth::FmMode;
+
+constexpr std::array<WarpMode, 7> warpModes { WarpMode::sync,   WarpMode::bendPlus, WarpMode::bendMinus, WarpMode::pwm,
+                                              WarpMode::mirror, WarpMode::quantize, WarpMode::bitcrush };
+
+const char* warpName (WarpMode mode) { return undertow::dsp::warpModeNames[static_cast<size_t> (mode)]; }
+
+void testWarpShapes()
+{
+    std::printf ("Warp: amount 0 = onda original; Bend, PWM y Mirror continuos y con la velocidad acotada\n");
+
+    // Onda de prueba suave (sin saltos) con varios armónicos.
+    const auto wave = [] (double phase) {
+        return static_cast<float> (std::sin (2.0 * pi * phase) + 0.3 * std::sin (6.0 * pi * phase)
+                                   + 0.2 * std::cos (10.0 * pi * phase));
+    };
+
+    bool identical = true;
+    for (const auto mode : warpModes)
+    {
+        const auto warp = Warp::make (mode, 0.0f);
+        for (int i = 0; i < 1000; ++i)
+        {
+            const double phase = i / 1000.0;
+            identical = identical && undertow::dsp::warpedValue (warp, phase, wave, wave) == wave (phase);
+        }
+    }
+    CHECK (identical);
+
+    // Bend y PWM: la fase deformada es continua (también al dar la vuelta) y nunca va más rápido que maxSpeed,
+    // la velocidad con la que el oscilador elige el mipmap.
+    constexpr int n = 200000;
+    double worstSpeedRatio = 0.0;
+    for (const auto mode : { WarpMode::bendPlus, WarpMode::bendMinus, WarpMode::pwm })
+    {
+        for (const float amount : { 0.3f, 0.7f, 1.0f })
+        {
+            const auto warp = Warp::make (mode, amount);
+            for (int i = 0; i < n; ++i)
+            {
+                double step = undertow::dsp::warpPhase (warp, undertow::dsp::wrapPhase ((i + 1.0) / n))
+                              - undertow::dsp::warpPhase (warp, static_cast<double> (i) / n);
+                step -= std::round (step); // pasar de 0.999 a 0 es dar la vuelta, no saltar
+                worstSpeedRatio = std::max (worstSpeedRatio, std::abs (step) * n / warp.maxSpeed);
+            }
+        }
+    }
+    std::printf ("  Bend/PWM: velocidad máxima medida / prevista = %.4f\n", worstSpeedRatio);
+    CHECK (worstSpeedRatio <= 1.0001);
+
+    // Mirror al 100 %: ida y vuelta al doble de velocidad, sin saltos.
+    const auto mirror = Warp::make (WarpMode::mirror, 1.0f);
+    float worstJump = 0.0f;
+    for (int i = 0; i < n; ++i)
+        worstJump = std::max (worstJump, std::abs (undertow::dsp::warpedValue (mirror, undertow::dsp::wrapPhase ((i + 1.0) / n), wave, wave)
+                                                   - undertow::dsp::warpedValue (mirror, static_cast<double> (i) / n, wave, wave)));
+    // Pendiente máxima de la onda de prueba: 2π·(1 + 0.9 + 1); al doble de velocidad, el doble.
+    CHECK (worstJump < 2.0 * 2.0 * pi * 2.9 / n);
+
+    // Quantize con 8 escalones: la onda cambia exactamente 8 veces por ciclo.
+    const auto quantize = Warp::make (WarpMode::quantize, 5.0f / 7.0f);
+    int changes = 0;
+    float previous = undertow::dsp::warpedValue (quantize, (n - 1.0) / n, wave, wave);
+    for (int i = 0; i < n; ++i)
+    {
+        const float value = undertow::dsp::warpedValue (quantize, static_cast<double> (i) / n, wave, wave);
+        changes += value != previous ? 1 : 0;
+        previous = value;
+    }
+    std::printf ("  Quantize (%.2f escalones): %d cambios por ciclo\n", quantize.steps, changes);
+    CHECK (changes == 8);
+
+    // Bitcrush al 100 % (1 bit): solo quedan valores enteros.
+    const auto crush = Warp::make (WarpMode::bitcrush, 1.0f);
+    bool integers = true;
+    for (int i = 0; i < 1000; ++i)
+    {
+        const float value = undertow::dsp::warpedValue (crush, i / 1000.0, wave, wave);
+        integers = integers && value == std::round (value);
+    }
+    CHECK (integers);
+}
+
+void testHalfbandDecimator()
+{
+    std::printf ("Decimador halfband (2x → 1x): plano hasta 20 kHz; rechaza lo que se reflejaría en lo audible\n");
+
+    for (const double sr : { 44100.0, 48000.0 })
+    {
+        // Ganancia para un seno de frecuencia 'hz' a la frecuencia sobremuestreada (2·sr). En la banda de paso se mide
+        // la amplitud exacta (correlación con ventana de Hann); en la de rechazo basta el RMS de lo que sale.
+        const auto gainDb = [sr] (double hz) {
+            HalfbandDecimator decimator;
+            decimator.prepare (sr);
+            const double rate = 2.0 * sr;
+            constexpr int settle = 2000;
+            constexpr int count = 40000;
+            double sum = 0.0, windowSum = 0.0;
+            Complex correlation {};
+            for (int i = 0; i < settle + count; ++i)
+            {
+                const auto first = static_cast<float> (std::sin (2.0 * pi * hz * (2.0 * i) / rate));
+                const auto second = static_cast<float> (std::sin (2.0 * pi * hz * (2.0 * i + 1.0) / rate));
+                const double y = decimator.process (first, second);
+                if (i < settle)
+                    continue;
+                const double window = 0.5 - 0.5 * std::cos (2.0 * pi * (i - settle) / (count - 1.0));
+                correlation += window * y * std::polar (1.0, -2.0 * pi * hz * i / sr);
+                windowSum += window;
+                sum += y * y;
+            }
+            return hz < 0.5 * sr ? toDb (2.0 * std::abs (correlation) / windowSum) : toDb (std::sqrt (2.0 * sum / count));
+        };
+
+        double ripple = 0.0;
+        for (const double hz : { 50.0, 1000.0, 5000.0, 10000.0, 15000.0, 19000.0, 20000.0 })
+            ripple = std::max (ripple, std::abs (gainDb (hz)));
+
+        // Todo lo que está entre sr − 20 kHz y sr se reflejaría por debajo de 20 kHz al volver a 1x.
+        double rejection = -300.0;
+        for (double hz = sr - 20000.0; hz < sr; hz += 250.0)
+            rejection = std::max (rejection, gainDb (hz));
+
+        HalfbandDecimator decimator;
+        decimator.prepare (sr);
+        std::printf ("  %4.1f kHz: %3d taps, retardo %.1f muestras; banda de paso ±%.5f dB; rechazo %.1f dB\n", sr / 1000.0,
+                     decimator.getNumTaps(), decimator.getLatency(), ripple, rejection);
+        CHECK (ripple < 0.001);
+        CHECK (rejection < -95.0);
+    }
+}
+
+// Espectro de una nota (mono) a través de la voz completa, con las fuentes indicadas.
+std::vector<double> voiceSpectrum (const SourceSettings& sources, int note, double sampleRate, size_t n,
+                                   const ModulationSettings* modulation = nullptr, float modWheel = 0.0f)
+{
+    VoiceManager manager;
+    prepareWithSources (manager, sampleRate, sources);
+    if (modulation != nullptr)
+        manager.setModulationSettings (*modulation);
+    manager.setModWheel (modWheel);
+    manager.noteOn (note, 1.0f);
+    renderSilently (manager, static_cast<int> (sampleRate * 0.02));
+    std::vector<float> signal (n, 0.0f);
+    manager.render (signal.data(), static_cast<int> (n));
+    return magnitudeSpectrum (signal);
+}
+
+// Osc A: seno (portadora). Osc B: seno apagado dos octavas abajo, que solo modula: 110 Hz cuando A toca A5.
+SourceSettings fmTestSources (FmMode mode, float amount)
+{
+    auto sources = sineSources();
+    sources.oscillators[1].octave = -2;
+    sources.oscillators[0].fmMode = mode;
+    sources.oscillators[0].fmAmount = amount;
+    return sources;
+}
+
+// Amount de la perilla FM que da el índice de modulación β (en radianes).
+float fmAmountForIndex (double beta)
+{
+    return static_cast<float> (std::sqrt (beta / (2.0 * pi) / undertow::synth::maxFmCycles));
+}
+
+void testFmMatchesBessel()
+{
+    std::printf ("FM: las bandas laterales tienen el nivel de las funciones de Bessel J_n(β)\n");
+
+    double worst = 0.0;
+    for (const double sr : sampleRates)
+    {
+        const size_t n = sr > 50000.0 ? 131072 : 65536;
+        const double binHz = sr / static_cast<double> (n);
+        const auto spectrum = voiceSpectrum (fmTestSources (FmMode::fmOther, fmAmountForIndex (1.0)), 69, sr, n);
+        const double carrier = componentLevel (spectrum, 440.0, binHz);
+        for (int k = -3; k <= 3; ++k)
+        {
+            const double expected = std::abs (std::cyl_bessel_j (std::abs (k), 1.0) / std::cyl_bessel_j (0, 1.0));
+            const double measured = componentLevel (spectrum, 440.0 + 110.0 * k, binHz) / carrier;
+            worst = std::max (worst, std::abs (toDb (measured / expected)));
+        }
+    }
+    std::printf ("  β = 1, bandas en 440 ± n·110 Hz (n = 1..3), 4 sample rates: peor desviación %.3f dB\n", worst);
+    CHECK (worst < 0.2);
+
+    // Con β = 2.405 (el primer cero de J0) la portadora desaparece: toda la energía pasa a las bandas laterales.
+    const auto spectrum = voiceSpectrum (fmTestSources (FmMode::fmOther, fmAmountForIndex (2.404826)), 69, 48000.0, 65536);
+    const double binHz = 48000.0 / 65536.0;
+    const double carrierDb = toDb (componentLevel (spectrum, 440.0, binHz) / componentLevel (spectrum, 550.0, binHz));
+    std::printf ("  β = 2.405: la portadora queda a %.1f dB de la primera banda lateral\n", carrierDb);
+    CHECK (carrierDb < -40.0);
+}
+
+void testRingModulation()
+{
+    std::printf ("Ring mod: 440 Hz × 110 Hz = 330 Hz + 550 Hz (la original desaparece); al 50 %% es AM\n");
+
+    const double sr = 48000.0;
+    const size_t n = 65536;
+    const double binHz = sr / static_cast<double> (n);
+    const auto levelsAt = [&] (float amount) {
+        const auto spectrum = voiceSpectrum (fmTestSources (FmMode::rmOther, amount), 69, sr, n);
+        return std::array<double, 3> { componentLevel (spectrum, 330.0, binHz), componentLevel (spectrum, 440.0, binHz),
+                                       componentLevel (spectrum, 550.0, binHz) };
+    };
+    const auto dry = levelsAt (0.0f);
+    const auto full = levelsAt (1.0f);
+    const auto half = levelsAt (0.5f);
+    std::printf ("  100 %%: 330 Hz %.2f dB, 440 Hz %.1f dB, 550 Hz %.2f dB\n", toDb (full[0] / dry[1]), toDb (full[1] / dry[1]),
+                 toDb (full[2] / dry[1]));
+    std::printf ("   50 %%: 330 Hz %.2f dB, 440 Hz %.2f dB, 550 Hz %.2f dB\n", toDb (half[0] / dry[1]), toDb (half[1] / dry[1]),
+                 toDb (half[2] / dry[1]));
+    CHECK (std::abs (toDb (full[0] / dry[1]) + 6.02) < 0.05);
+    CHECK (std::abs (toDb (full[2] / dry[1]) + 6.02) < 0.05);
+    CHECK (toDb (full[1] / dry[1]) < -80.0);
+    CHECK (std::abs (toDb (half[1] / dry[1]) + 6.02) < 0.05);
+    CHECK (std::abs (toDb (half[0] / dry[1]) + 12.04) < 0.05);
+}
+
+void testModulatedPathKeepsTheSound()
+{
+    std::printf ("Elegir un modo con amount 0 no cambia el sonido (camino sobremuestreado = camino normal)\n");
+
+    double worstDb = 0.0;
+    for (const double sr : sampleRates)
+    {
+        const size_t n = sr > 50000.0 ? 131072 : 65536;
+        const double binHz = sr / static_cast<double> (n);
+        SourceSettings plain;
+        plain.subTable = &factoryBank().get (0);
+        plain.oscillators[0].table = &factoryBank().get (0);
+        plain.oscillators[0].position = 2.0f / 3.0f; // sierra
+        const auto reference = voiceSpectrum (plain, 69, sr, n);
+        const double fundamental = componentLevel (reference, 440.0, binHz);
+
+        auto warped = plain;
+        warped.oscillators[0].warpMode = WarpMode::sync;
+        auto modulated = plain;
+        modulated.oscillators[0].fmMode = FmMode::fmOther;
+        for (const auto& sources : { warped, modulated })
+        {
+            const auto spectrum = voiceSpectrum (sources, 69, sr, n);
+            // Solo los armónicos que la tabla tiene en esta nota (el mipmap de A5 a 48 kHz llega al 32).
+            for (int h = 1; h * 440.0 < 19500.0; ++h)
+            {
+                if (componentLevel (reference, h * 440.0, binHz) < fundamental * 1.0e-4)
+                    continue;
+                const double db = toDb (componentLevel (spectrum, h * 440.0, binHz) / componentLevel (reference, h * 440.0, binHz));
+                worstDb = std::max (worstDb, std::abs (db));
+                if (verbose && std::abs (db) > 0.01)
+                    std::printf ("    %5.1f kHz, armónico %2d: %+.3f dB\n", sr / 1000.0, h, db);
+            }
+        }
+    }
+    std::printf ("  sierra A5, armónicos hasta 19.5 kHz, 4 sample rates: diferencia máxima %.4f dB\n", worstDb);
+    CHECK (worstDb < 0.01);
+
+    // El ruido a 2x reparte su energía en el doble de ancho de banda: se compensa para que suene igual. Se compara la
+    // banda audible (el decimador sí quita el ruido entre 20 y 24 kHz, que el camino normal deja pasar).
+    const auto noisePower = [] (bool oversampled) {
+        auto sources = sineSources();
+        sources.oscillators[0].enabled = false;
+        sources.noise.enabled = true;
+        if (oversampled)
+            sources.oscillators[0].fmMode = FmMode::fmNoise; // A apagada: solo activa el camino sobremuestreado
+        const size_t n = 262144;
+        const auto spectrum = voiceSpectrum (sources, 60, 48000.0, n);
+        double power = 0.0;
+        for (size_t k = 0; k < spectrum.size(); ++k)
+        {
+            const double hz = 48000.0 * static_cast<double> (k) / static_cast<double> (n);
+            if (hz >= 200.0 && hz <= 18000.0)
+                power += spectrum[k] * spectrum[k];
+        }
+        return power;
+    };
+    const double noiseDb = 10.0 * std::log10 (noisePower (true) / noisePower (false));
+    std::printf ("  ruido blanco (200 Hz - 18 kHz), camino sobremuestreado respecto al normal: %+.3f dB\n", noiseDb);
+    CHECK (std::abs (noiseDb) < 0.01);
+}
+
+// Peor alias (todo lo que no es múltiplo de f0, por debajo de 20 kHz) de una nota a través de la voz.
+double voiceAliasDb (const SourceSettings& sources, int note, double sr)
+{
+    const size_t n = sr > 50000.0 ? 131072 : 65536;
+    const auto spectrum = voiceSpectrum (sources, note, sr, n);
+    return worstAliasDb (spectrum, undertow::dsp::midiNoteToHz (note), sr / static_cast<double> (n));
+}
+
+void testWarpAliasing()
+{
+    std::printf ("Aliasing de cada warp (seno y sierra, notas C4 a C7 de FL, 4 sample rates; C8 aparte)\n");
+
+    // Umbral de cada modo: el medido con algo de margen, para que una regresión se note. Los dos más difíciles:
+    //  - Bend −: su curva frena y acelera muy bruscamente en el centro del ciclo, y eso crea armónicos que ningún
+    //    mipmap evita.
+    //  - Bitcrush de una sierra: cerca de su salto la onda ondula (Gibbs) y a veces cruza un umbral y vuelve dentro
+    //    de la misma muestra; ese pulso más corto que una muestra no se ve y no se puede corregir. (Con el seno: −92 dB.)
+    struct Case
+    {
+        WarpMode mode;
+        float amount;
+        double thresholdDb;
+    };
+    constexpr std::array<Case, 7> cases { { { WarpMode::sync, 0.8f, -75.0 },
+                                            { WarpMode::bendPlus, 1.0f, -72.0 },
+                                            { WarpMode::bendMinus, 1.0f, -60.0 },
+                                            { WarpMode::pwm, 0.8f, -75.0 },
+                                            { WarpMode::mirror, 1.0f, -85.0 },
+                                            { WarpMode::quantize, 0.6f, -75.0 },
+                                            { WarpMode::bitcrush, 0.6f, -50.0 } } };
+    // C8 (4186 Hz) se mide aparte: con estos amounts la lectura más rápida pasa de 30 kHz, por encima del límite de
+    // armónicos incluso para un seno puro, así que ahí el warp crea contenido que ya no se puede limitar.
+    constexpr std::array<int, 5> notes { 48, 60, 72, 84, 96 };
+
+    for (const auto& c : cases)
+    {
+        double worst = -300.0, worstC8 = -300.0;
+        for (const double sr : sampleRates)
+        {
+            for (const float position : { 0.0f, 2.0f / 3.0f })
+            {
+                SourceSettings sources;
+                sources.subTable = &factoryBank().get (0);
+                sources.oscillators[0].table = &factoryBank().get (0);
+                sources.oscillators[0].position = position;
+                sources.oscillators[0].warpMode = c.mode;
+                sources.oscillators[0].warpAmount = c.amount;
+                for (const int note : notes)
+                {
+                    const double db = voiceAliasDb (sources, note, sr);
+                    auto& target = note < 96 ? worst : worstC8;
+                    target = std::max (target, db);
+                    if (verbose)
+                        std::printf ("    %-9s %5.1f kHz %-6s nota %3d: %6.1f dB\n", warpName (c.mode), sr / 1000.0,
+                                     position == 0.0f ? "seno" : "sierra", note, db);
+                }
+            }
+        }
+        std::printf ("  %-9s %3.0f %%: peor alias %6.1f dB   (C8: %6.1f dB)\n", warpName (c.mode), c.amount * 100.0, worst, worstC8);
+        CHECK (worst < c.thresholdDb);
+    }
+
+    // Referencia: un sync "ingenuo" (seno reiniciado en cada ciclo, sin polyBLEP ni oversampling), a 48 kHz.
+    const double ratio = Warp::make (WarpMode::sync, 0.8f).syncRatio;
+    double naive = -300.0;
+    for (const int note : notes)
+    {
+        const double f0 = undertow::dsp::midiNoteToHz (note);
+        std::vector<float> signal (65536);
+        double phase = 0.0;
+        for (auto& sample : signal)
+        {
+            sample = static_cast<float> (std::sin (2.0 * pi * undertow::dsp::wrapPhase (phase * ratio)));
+            phase = undertow::dsp::wrapPhase (phase + f0 / 48000.0);
+        }
+        naive = std::max (naive, worstAliasDb (magnitudeSpectrum (signal), f0, 48000.0 / 65536.0));
+    }
+    std::printf ("  (referencia: sync ingenuo de un seno a 48 kHz: %.1f dB)\n", naive);
+}
+
+void testFmAliasing()
+{
+    std::printf ("Aliasing de la FM (portadora seno y sierra, moduladora una octava arriba, notas C4 a C7 de FL)\n");
+
+    for (const float amount : { 0.3f, 0.6f })
+    {
+        double worst = -300.0;
+        for (const double sr : sampleRates)
+        {
+            for (const float position : { 0.0f, 2.0f / 3.0f })
+            {
+                SourceSettings sources;
+                sources.subTable = &factoryBank().get (0);
+                sources.oscillators[0].table = &factoryBank().get (0);
+                sources.oscillators[0].position = position;
+                sources.oscillators[0].fmMode = FmMode::fmOther;
+                sources.oscillators[0].fmAmount = amount;
+                sources.oscillators[1].enabled = false;
+                sources.oscillators[1].table = &factoryBank().get (0); // seno
+                sources.oscillators[1].octave = 1;
+                for (const int note : { 48, 60, 72, 84 })
+                {
+                    const double db = voiceAliasDb (sources, note, sr);
+                    worst = std::max (worst, db);
+                    if (verbose)
+                        std::printf ("    FM %2.0f %% %5.1f kHz %-6s nota %3d: %6.1f dB\n", amount * 100.0, sr / 1000.0,
+                                     position == 0.0f ? "seno" : "sierra", note, db);
+                }
+            }
+        }
+        const double cycles = undertow::synth::maxFmCycles * amount * amount;
+        std::printf ("  amount %2.0f %% (β = %.1f): peor alias %6.1f dB\n", amount * 100.0, 2.0 * pi * cycles, worst);
+        CHECK (worst < -60.0);
+    }
+}
+
+void testWarpSwitchIsClickFree()
+{
+    std::printf ("Cambiar el modo de warp o de FM/RM con la nota sonando no produce clics\n");
+
+    auto sources = sineSources();
+    sources.oscillators[0].warpAmount = 1.0f;
+    sources.oscillators[0].fmAmount = 0.5f;
+    VoiceManager manager;
+    prepareWithSources (manager, 48000.0, sources);
+    manager.noteOn (36, 1.0f); // C3 de FL, 65.4 Hz
+    std::vector<float> warmUp (4800, 0.0f);
+    manager.render (warmUp.data(), static_cast<int> (warmUp.size()));
+
+    struct Step
+    {
+        WarpMode warp;
+        FmMode fm;
+    };
+    constexpr std::array<Step, 7> steps { { { WarpMode::bendPlus, FmMode::off },
+                                            { WarpMode::none, FmMode::off },
+                                            { WarpMode::bendMinus, FmMode::off },
+                                            { WarpMode::none, FmMode::fmOther },
+                                            { WarpMode::mirror, FmMode::fmOther },
+                                            { WarpMode::mirror, FmMode::rmSub },
+                                            { WarpMode::none, FmMode::off } } };
+    constexpr int segment = 4800;
+    float switchJump = 0.0f, steadyJump = 0.0f;
+    float previous = warmUp.back();
+    for (const auto& step : steps)
+    {
+        sources.oscillators[0].warpMode = step.warp;
+        sources.oscillators[0].fmMode = step.fm;
+        manager.setSourceSettings (sources);
+        std::vector<float> signal (segment, 0.0f);
+        manager.render (signal.data(), segment);
+        float switchHere = 0.0f, steadyHere = 0.0f;
+        size_t where = 0;
+        for (size_t i = 0; i < signal.size(); ++i)
+        {
+            // Los primeros 10 ms de cada tramo contienen el cambio (el fundido dura 5 ms); el resto es el sonido estable.
+            auto& worst = i < 480 ? switchHere : steadyHere;
+            const float jump = std::abs (signal[i] - (i == 0 ? previous : signal[i - 1]));
+            if (i < 480 && jump > worst)
+                where = i;
+            worst = std::max (worst, jump);
+        }
+        if (verbose)
+            std::printf ("    (salto mayor del cambio en la muestra %zu)\n", where);
+        previous = signal.back();
+        switchJump = std::max (switchJump, switchHere);
+        steadyJump = std::max (steadyJump, steadyHere);
+        if (verbose)
+            std::printf ("    -> %-8s + FM/RM %d: al cambiar %.5f, estable %.5f\n", warpName (step.warp),
+                         static_cast<int> (step.fm), switchHere, steadyHere);
+    }
+    std::printf ("  salto máximo al cambiar: %.5f (el propio sonido, ya estable: %.5f)\n", switchJump, steadyJump);
+    CHECK (switchJump <= steadyJump * 1.05f);
+}
+
+void testWarpAndFmDestinations()
+{
+    std::printf ("Destinos nuevos: Osc A Warp y Osc A FM/RM desde la matriz (Mod Wheel)\n");
+
+    const double sr = 48000.0;
+    const size_t n = 65536;
+    const double binHz = sr / static_cast<double> (n);
+
+    // Warp: Sync al 0 % en la perilla; la rueda lo sube al 80 %. Sin rueda, el seno es puro.
+    auto warpSources = sineSources();
+    warpSources.oscillators[0].warpMode = WarpMode::sync;
+    ModulationSettings warpRoute;
+    warpRoute.slots[0] = { ModSource::modWheel, ModDestination::oscAWarp, 0.8f };
+    const auto overtoneDb = [&] (float wheel) {
+        const auto spectrum = voiceSpectrum (warpSources, 69, sr, n, &warpRoute, wheel);
+        double overtones = 0.0;
+        for (int h = 2; h <= 20; ++h)
+            overtones = std::max (overtones, componentLevel (spectrum, h * 440.0, binHz));
+        return toDb (overtones / componentLevel (spectrum, 440.0, binHz));
+    };
+    const double still = overtoneDb (0.0f);
+    const double moved = overtoneDb (1.0f);
+    std::printf ("  Warp: armónico más fuerte respecto a la fundamental: rueda abajo %.1f dB, arriba %.1f dB\n", still, moved);
+    CHECK (still < -80.0);
+    CHECK (moved > -6.0);
+
+    // FM: la rueda lleva el índice a β = 1 → la primera banda lateral a J1/J0 (−4.8 dB).
+    ModulationSettings fmRoute;
+    fmRoute.slots[0] = { ModSource::modWheel, ModDestination::oscAFm, fmAmountForIndex (1.0) };
+    const auto sidebandDb = [&] (float wheel) {
+        const auto spectrum = voiceSpectrum (fmTestSources (FmMode::fmOther, 0.0f), 69, sr, n, &fmRoute, wheel);
+        return toDb (componentLevel (spectrum, 550.0, binHz) / componentLevel (spectrum, 440.0, binHz));
+    };
+    const double expected = toDb (std::cyl_bessel_j (1, 1.0) / std::cyl_bessel_j (0, 1.0));
+    const double off = sidebandDb (0.0f);
+    const double on = sidebandDb (1.0f);
+    std::printf ("  FM: banda lateral de 550 Hz: rueda abajo %.1f dB, arriba %.2f dB (J1/J0 = %.2f dB)\n", off, on, expected);
+    CHECK (off < -80.0);
+    CHECK (std::abs (on - expected) < 0.2);
+}
+
+void testExtremeWarpIsSafe()
+{
+    std::printf ("Warp y FM al máximo (unison 16, FM cruzada, notas extremas, modulación rápida) sin valores inválidos\n");
+
+    for (const double sr : sampleRates)
+    {
+        for (const auto mode : warpModes)
+        {
+            SourceSettings sources;
+            sources.subTable = &factoryBank().get (0);
+            sources.sub.enabled = true;
+            sources.noise.enabled = true;
+            for (size_t o = 0; o < 2; ++o)
+            {
+                auto& osc = sources.oscillators[o];
+                osc.enabled = true;
+                osc.table = &factoryBank().get (static_cast<int> (o) * 3);
+                osc.position = 0.9f;
+                osc.octave = 4;
+                osc.unison = 16;
+                osc.detune = 1.0f;
+                osc.width = 1.0f;
+                osc.warpMode = mode;
+                osc.warpAmount = 1.0f;
+                osc.fmAmount = 1.0f;
+            }
+            sources.oscillators[0].fmMode = FmMode::fmOther;
+            sources.oscillators[1].fmMode = FmMode::fmNoise;
+
+            ModulationSettings modulation;
+            modulation.lfos[0] = { LfoShape::sampleAndHold, LfoMode::retrigger, false, 40.0f, 5 };
+            modulation.slots[0] = { ModSource::lfo1, ModDestination::oscAWarp, 1.0f };
+            modulation.slots[1] = { ModSource::lfo1, ModDestination::oscBFm, 1.0f };
+            modulation.slots[2] = { ModSource::lfo1, ModDestination::globalPitch, 1.0f };
+
+            VoiceManager manager;
+            prepareWithSources (manager, sr, sources);
+            manager.setModulationSettings (modulation);
+            manager.setPolyphony (4);
+            for (const int note : { 0, 60, 120, 127 })
+                manager.noteOn (note, 1.0f);
+            const auto out = renderStereo (manager, static_cast<int> (sr / 2));
+
+            bool finite = true;
+            for (size_t i = 0; i < out.left.size(); ++i)
+                finite = finite && std::isfinite (out.left[i]) && std::isfinite (out.right[i]) && std::abs (out.left[i]) < 20.0f
+                         && std::abs (out.right[i]) < 20.0f;
+            CHECK (finite);
+        }
+    }
+}
+
+void testWarpCpuCost()
+{
+    std::printf ("Coste de CPU con warp y FM (48 kHz, camino sobremuestreado)\n");
+
+    SourceSettings sources;
+    sources.subTable = &factoryBank().get (0);
+    sources.oscillators[0].table = &factoryBank().get (0);
+    sources.oscillators[0].position = 2.0f / 3.0f;
+    sources.oscillators[1].table = &factoryBank().get (0);
+
+    auto sync = sources;
+    sync.oscillators[0].warpMode = WarpMode::sync;
+    sync.oscillators[0].warpAmount = 0.6f;
+    measureVoiceCpu ("8 notas, Osc A sierra con Sync (sin unison)", 8, sync, false);
+
+    auto fm = sources;
+    fm.oscillators[0].position = 0.0f;
+    fm.oscillators[0].fmMode = FmMode::fmOther;
+    fm.oscillators[0].fmAmount = 0.5f;
+    fm.oscillators[1].enabled = false;
+    measureVoiceCpu ("8 notas, FM de 2 operadores (B modula a A)", 8, fm, false);
+
+    sync.oscillators[0].unison = 7;
+    sync.oscillators[0].detune = 0.4f;
+    measureVoiceCpu ("8 notas, Sync con 7 copias de unison", 8, sync, false);
+
+    auto worst = sources;
+    worst.sub.enabled = true;
+    worst.noise.enabled = true;
+    for (auto& osc : worst.oscillators)
+    {
+        osc.enabled = true;
+        osc.unison = 16;
+        osc.warpMode = WarpMode::mirror;
+        osc.warpAmount = 0.5f;
+        osc.fmAmount = 0.3f;
+    }
+    worst.oscillators[0].fmMode = FmMode::fmOther;
+    worst.oscillators[1].fmMode = FmMode::rmSub;
+    measureVoiceCpu ("16 notas, A y B: 16 copias, Mirror y FM/RM (peor caso)", 16, worst, true);
 }
 } // namespace
 
 
-int main()
+int main (int argc, char** argv)
 {
-    testSegmentTimesAreExactAtEverySampleRate();
-    testReleaseFromMidAttackKeepsItsDuration();
-    testRetriggerIsContinuous();
-    testQuickReleaseTakesFiveMilliseconds();
-    testPolyphonyLimit();
-    testStealingPrefersReleasedNotes();
-    testRepeatedNoteReusesVoice();
-    testSustainPedal();
-    testVoiceStealingIsClickFree();
-    testReferencePitches();
-    testRenderedPitchMatchesNote();
+    // Opciones: --verbose (detalle de las mediciones), --fase7 (solo los tests de la Fase 7, para iterar rápido).
+    bool onlyPhase7 = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        verbose = verbose || std::string_view (argv[i]) == "--verbose";
+        onlyPhase7 = onlyPhase7 || std::string_view (argv[i]) == "--fase7";
+    }
+    if (! onlyPhase7)
+    {
+        testSegmentTimesAreExactAtEverySampleRate();
+        testReleaseFromMidAttackKeepsItsDuration();
+        testRetriggerIsContinuous();
+        testQuickReleaseTakesFiveMilliseconds();
+        testPolyphonyLimit();
+        testStealingPrefersReleasedNotes();
+        testRepeatedNoteReusesVoice();
+        testSustainPedal();
+        testVoiceStealingIsClickFree();
+        testReferencePitches();
+        testRenderedPitchMatchesNote();
 
-    const auto start = std::chrono::steady_clock::now();
-    (void) factoryBank();
-    const auto elapsed = std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now() - start).count();
-    std::printf ("Banco de wavetables de fábrica construido en %.0f ms\n", elapsed);
+        const auto start = std::chrono::steady_clock::now();
+        (void) factoryBank();
+        const auto elapsed = std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now() - start).count();
+        std::printf ("Banco de wavetables de fábrica construido en %.0f ms\n", elapsed);
 
-    testFftRoundTrip();
-    testMipmapsRemoveHarmonics();
-    testMipLevelSelection();
-    testNoAudibleAliasing();
-    testHighHarmonicsArePreserved();
-    testPositionChangeIsSmooth();
-    testTableSwitchIsClickFree();
-    testNewNoteStartsAtCurrentPosition();
+        testFftRoundTrip();
+        testMipmapsRemoveHarmonics();
+        testMipLevelSelection();
+        testNoAudibleAliasing();
+        testHighHarmonicsArePreserved();
+        testPositionChangeIsSmooth();
+        testTableSwitchIsClickFree();
+        testNewNoteStartsAtCurrentPosition();
 
-    testFilterMatchesTheory();
-    testFilterCutoffAndSlopes();
-    testResonance();
-    testFilterModulationIsStable();
-    testFilterChangesAreClickFree();
-    testDrive();
-    reportDriveAliasing();
-    testKeyTracking();
-    testFilterToggleInVoiceIsClickFree();
-    testFilterCpuCost();
+        testFilterMatchesTheory();
+        testFilterCutoffAndSlopes();
+        testResonance();
+        testFilterModulationIsStable();
+        testFilterChangesAreClickFree();
+        testDrive();
+        reportDriveAliasing();
+        testKeyTracking();
+        testFilterToggleInVoiceIsClickFree();
+        testFilterCpuCost();
 
-    testLfoShapes();
-    testLfoRateIsExact();
-    testLfoOneShot();
-    testSampleAndHold();
-    testTempoSyncRates();
-    testFreeModeFollowsSongPosition();
-    testFreeVersusRetrigger();
-    testKeyToCutoffEqualsKeyTracking();
-    testPitchModulation();
-    testVibratoRange();
-    testEnvelopeSweepsCutoff();
-    testModulationIsClickFree();
-    testMipBlendIsContinuous();
-    testModulationCpuCost();
+        testLfoShapes();
+        testLfoRateIsExact();
+        testLfoOneShot();
+        testSampleAndHold();
+        testTempoSyncRates();
+        testFreeModeFollowsSongPosition();
+        testFreeVersusRetrigger();
+        testKeyToCutoffEqualsKeyTracking();
+        testPitchModulation();
+        testVibratoRange();
+        testEnvelopeSweepsCutoff();
+        testModulationIsClickFree();
+        testMipBlendIsContinuous();
+        testModulationCpuCost();
 
-    testUnisonDetuneSpread();
-    testUnisonKeepsLoudness();
-    testStereoWidthAndPan();
-    testSourceChangesAreClickFree();
-    testOscillatorTuning();
-    testSubShapes();
-    testNoiseColor();
-    testPhase6Destinations();
-    testExtremePitchIsSafe();
-    testUnisonMipmapHasNoAlias();
-    testUnisonCpuCost();
+        testUnisonDetuneSpread();
+        testUnisonKeepsLoudness();
+        testStereoWidthAndPan();
+        testSourceChangesAreClickFree();
+        testOscillatorTuning();
+        testSubShapes();
+        testNoiseColor();
+        testPhase6Destinations();
+        testExtremePitchIsSafe();
+        testUnisonMipmapHasNoAlias();
+        testUnisonCpuCost();
+    }
+
+    testWarpShapes();
+    testHalfbandDecimator();
+    testFmMatchesBessel();
+    testRingModulation();
+    testModulatedPathKeepsTheSound();
+    testWarpAliasing();
+    testFmAliasing();
+    testWarpSwitchIsClickFree();
+    testWarpAndFmDestinations();
+    testExtremeWarpIsSafe();
+    testWarpCpuCost();
 
     if (failures == 0)
         std::printf ("\nTodos los tests pasaron.\n");

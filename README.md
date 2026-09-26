@@ -6,8 +6,8 @@ llegar al nivel de sintes como Serum o Vital.
 
 ![Interfaz de Undertow Synth](docs/screenshot.png)
 
-> **Estado:** en desarrollo (fases 1–6 de 11 completadas). Ya suena y es usable en un DAW, pero todavía no tiene
-> FM, efectos ni presets. Ver la [hoja de ruta](#hoja-de-ruta).
+> **Estado:** en desarrollo (fases 1–7 de 11 completadas). Ya suena y es usable en un DAW, pero todavía no
+> tiene efectos ni presets. Ver la [hoja de ruta](#hoja-de-ruta).
 
 ## Qué tiene hoy
 
@@ -15,13 +15,16 @@ llegar al nivel de sintes como Serum o Vital.
   entre frames. Tiene 5 tablas de fábrica: *Basic Shapes*, *Pulse Width*, *Harmonic Build*, *Hard Sync* y *Vowels*.
 - **Unison de hasta 16 copias por oscilador,** con detune, ancho estéreo y paneo. El volumen se mantiene al cambiar
   el número de copias y ninguna copia produce aliasing.
+- **Warp, FM y ring mod en cada oscilador:** Sync, Bend + / −, PWM, Mirror, Quantize y Bitcrush; FM (en realidad PM,
+  como el DX7) y ring mod desde el otro oscilador, el sub o el ruido. Con control de aliasing: mipmap según la velocidad
+  real de lectura, polyBLEP/polyBLAMP de 4 muestras y oversampling ×2 con decimador halfband.
 - **Sub-oscilador** (seno, triángulo, sierra o cuadrada, de 0 a −3 octavas) y **ruido** con control de color.
 - **Filtro ZDF/TPT:** Low Pass, High Pass y Band Pass de 12 o 24 dB/octava, con resonancia, drive y key tracking.
   Incluye un visor de la curva de respuesta.
 - **Modulación:** 2 envolventes extra (Env 2 y Env 3), 2 LFOs (6 formas, sincronizables al tempo, modos Free,
   Retrigger y One Shot) y una matriz de 8 rutas. Fuentes: envolventes, LFOs, velocity, nota, rueda de modulación y
-  aftertouch. Destinos: posición, tono, nivel y detune de cada oscilador, tono global, nivel del sub y del ruido,
-  cutoff, resonancia, drive y volumen.
+  aftertouch. Destinos: posición, tono, nivel, detune, warp y FM/RM de cada oscilador, tono global, nivel del sub y
+  del ruido, cutoff, resonancia, drive y volumen.
 - **Polifonía de 1 a 16 voces** con robo de voces sin clics, pedal de sustain (CC64) y CC120/123.
 - **Envolvente ADSR** exponencial y sensibilidad a la velocity.
 - Correcto a 44.1, 48, 88.2 y 96 kHz y con cualquier tamaño de buffer. Validado con
@@ -101,6 +104,17 @@ En otros DAWs (Ableton, Reaper, Bitwig…) funciona igual: hay que reescanear la
 | Sub: forma, Octave, Level | Un oscilador simple por debajo de la nota (mono, siempre al centro) para dar peso en los graves. |
 | Ruido: Level, Color | Ruido para aire, ataques o texturas. Color 0 % = grave y oscuro, 50 % = blanco, 100 % = solo agudos. |
 
+**Pestaña Warp y FM** (una columna por oscilador; el dibujo muestra la onda original en gris y la deformada en naranja)
+| Control | Qué hace |
+|---|---|
+| Warp | Deforma la lectura de la onda. **Sync:** el ciclo se reinicia con la nota, con un pico de timbre que sube con el Amount. **Bend + / −:** acelera los bordes o el centro del ciclo. **PWM:** comprime la onda en una parte del ciclo. **Mirror:** ida y vuelta. **Quantize:** escalones en el tiempo. **Bitcrush:** escalones en la amplitud. |
+| Warp Amount | Cuánto se deforma. Con 0 % la onda es exactamente la original. |
+| FM / RM | **FM:** el otro oscilador, el sub o el ruido mueven la fase de este: brillo, metal, campanas. **RM:** se multiplican: suma y diferencia de frecuencias (robótico). El modulador funciona aunque esté apagado. |
+| FM / RM Amount | Profundidad. FM: índice de hasta 4π (curva: la mitad baja es la zona sutil). RM: al 50 % es AM, al 100 % ring mod puro. |
+
+Cambiar un modo con una nota sonando hace un fundido de ~6 ms (sin clics). Con algún warp o FM/RM activo el
+oscilador trabaja a doble frecuencia de muestreo y gasta más CPU.
+
 **Pestaña Filtro y Amp: filtro**
 | Control | Qué hace |
 |---|---|
@@ -148,9 +162,9 @@ diseño sonoro del proyecto. Explica qué se oye con cada control y por qué.
 Source/
   PluginProcessor.*   parámetros, estado y processBlock
   PluginEditor.*      interfaz
-  dsp/                oscilador con unison, wavetables, ruido, filtro, envolvente, LFO y FFT (sin JUCE)
+  dsp/                oscilador con unison, warp y FM, wavetables, decimador, ruido, filtro, envolvente, LFO y FFT (sin JUCE)
   synth/              voces, gestión de polifonía, matriz de modulación y banco de wavetables
-  gui/                visores propios (forma de onda, curva del filtro y LFO)
+  gui/                visores propios (forma de onda, warp, curva del filtro y LFO)
 tests/                tests de DSP (ejecutable independiente, sin JUCE)
 ```
 
@@ -164,7 +178,7 @@ El DSP no depende de JUCE: se puede probar aislado. Dentro del hilo de audio no 
 - [x] 4 — Filtros ZDF/TPT
 - [x] 5 — Modulación: envolventes extra, LFOs y matriz de modulación
 - [x] 6 — Segundo oscilador, sub, ruido y unison
-- [ ] 7 — FM, ring mod y modos de warp
+- [x] 7 — FM, ring mod y modos de warp
 - [ ] 8 — Efectos: distorsión, chorus, delay y reverb
 - [ ] 9 — Interfaz profesional
 - [ ] 10 — Presets y librería de sonidos
@@ -172,9 +186,12 @@ El DSP no depende de JUCE: se puede probar aislado. Dentro del hilo de audio no 
 
 **Límites conocidos:**
 - El drive del filtro todavía no tiene oversampling. Con drive alto en notas muy agudas puede aparecer algo de
-  aliasing. Se resolverá en la fase 7/8.
+  aliasing. Se resolverá en la fase 8.
 - El unison es caro con todo al máximo (16 notas con los dos osciladores a 16 copias ≈ 65–80 % de un núcleo). Un
-  supersaw normal (8 notas, 7 copias) cuesta ≈ 9 %. La optimización con SIMD llega en la fase 11.
+  supersaw normal (8 notas, 7 copias) cuesta ≈ 9 %. Con warp o FM el oscilador cuesta de 2 a 4 veces más (8 notas con
+  Sync ≈ 9 %, FM de 2 osciladores ≈ 14 %). La optimización con SIMD llega en la fase 11.
+- Aliasing medido de los warps (peor caso de C4 a C7): entre −72 y −92 dB, salvo Bend − al 100 % (−62 dB) y Bitcrush de
+  una sierra (−53 dB). En C8 con amounts extremos la lectura supera los 30 kHz y el alias sube (−53 a −79 dB).
 
 ## Licencia
 

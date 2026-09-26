@@ -791,3 +791,225 @@ Inténtalo primero; las pistas vendrán después.
 
 ### Retos completados
 - [ ] Reto Fase 6 — chord stab de future bass
+
+---
+
+## Fase 7 — FM, ring mod y warp
+
+### Conceptos aprendidos
+- **FM (modulación de frecuencia).** Un oscilador (la **moduladora**) mueve muy rápido el tono de otro (la
+  **portadora**). Con un LFO lento eso es un vibrato. Pero cuando la moduladora vibra a frecuencia de *audio*, el oído ya
+  no oye un tono que sube y baja: oye un **timbre nuevo**. Aparecen **bandas laterales** alrededor de la portadora, en
+  `portadora ± 1·moduladora`, `± 2·moduladora`, `± 3·moduladora`… Es la síntesis del Yamaha DX7 (1983): con dos senos
+  se pueden hacer campanas, pianos eléctricos, metales o bajos.
+- **En realidad es PM (modulación de fase).** Undertow no cambia la *velocidad* de la portadora: desplaza su *posición
+  de lectura* (`leer(fase + índice × moduladora)`). Suena igual que la FM y es lo que hacía el DX7, pero tiene una
+  ventaja: la nota nunca se desafina, porque el desplazamiento vuelve siempre a cero.
+- **Índice de modulación (β).** Cuánto se mueve la portadora. Con β pequeño (< 1) solo aparecen 1 o 2 bandas laterales:
+  brillo suave. Con β grande aparecen muchas: sonido metálico, agresivo. El nivel de cada banda lo dan las
+  **funciones de Bessel** Jₙ(β). Los tests lo comprueban con un error de 0.11 dB. Un caso curioso: con β = 2.4 la
+  portadora *desaparece* (J₀(2.4) = 0) y solo quedan las bandas laterales. La perilla FM Amount va en curva:
+
+  | FM Amount | 10 % | 20 % | 28 % | 40 % | 50 % | 70 % | 100 % |
+  |---|---|---|---|---|---|---|---|
+  | β (índice) | 0.13 | 0.5 | 1.0 | 2.0 | 3.1 | 6.2 | 12.6 |
+
+- **Ratio: armónico o inarmónico.** Lo que decide el *tipo* de timbre es la relación entre moduladora y portadora.
+  - Si es un número entero (1:1, 2:1, 3:1…), todas las bandas laterales caen en múltiplos de una misma
+    fundamental: el sonido es **armónico**, tiene tono claro (metales, órganos, bajos).
+  - Si no es entero (1:1.41, 1:3.5…), las bandas caen "entre" los armónicos: el sonido es **inarmónico**, como una
+    campana, un gong o un platillo.
+
+  En Undertow la ratio se ajusta con **Octave / Semi / Fine del oscilador modulador**. Con Octave +1 la ratio es 2:1.
+- **La moduladora no tiene por qué oírse.** On y Level deciden cuánto se *oye* un oscilador. Como moduladora se usa
+  siempre su señal completa, aunque esté apagado. Así se hace la FM clásica: **Osc A suena, Osc B (apagado) lo modula.**
+  También pueden modular el **sub** (FM grave, un "gruñido") y el **ruido** (FM "sucia", aire, arena).
+- **Ring mod (RM).** Multiplica las dos señales. Resultado: la **suma y la diferencia** de sus frecuencias, y la
+  original *desaparece*. Ejemplo: 440 Hz × 110 Hz = 330 Hz + 550 Hz. Casi siempre suena inarmónico, metálico, robótico
+  (la voz de los Daleks de *Doctor Who*). Con el amount a medias es **AM** (modulación de amplitud): la original sigue
+  sonando, con las dos bandas laterales a su lado.
+- **Warp: deformar la fase antes de leer la tabla.** La tabla no cambia: cambia el *recorrido* por ella. Por eso
+  cualquier warp funciona con cualquier wavetable. Con el amount a 0 la onda es exactamente la original.
+  - **Sync (hard sync).** Hay un oscilador "esclavo" que corre más rápido que la nota y vuelve a empezar cada vez que
+    el "maestro" (la nota) completa un ciclo. El tono sigue siendo el de la nota, pero el timbre tiene un **pico de
+    resonancia** en la frecuencia del esclavo. Moverlo suena a un "uaaau" vocal y agresivo, el sonido de sync de los
+    sintes analógicos. Cada 25 % de la perilla el esclavo sube una octava (×2, ×4, ×8, ×16).
+  - **Bend + / Bend −.** Acelera unas partes del ciclo y frena otras. Bend + va rápido en los bordes y lento en el
+    centro; Bend − al revés. Añade armónicos sin cambiar el tono. Suena más "apretado" o más "nasal", según la onda.
+  - **PWM.** Comprime el ciclo entero en una parte y el resto se queda quieto. Con una cuadrada es la clásica
+    modulación de ancho de pulso: más estrecho = más fino y "nasal". Con otras ondas crea formas nuevas.
+  - **Mirror.** Mezcla la onda con su versión "ida y vuelta": el ciclo se lee al doble de velocidad hacia delante y
+    luego hacia atrás. Resultado: una onda simétrica, más hueca, con carácter de órgano o de vocal.
+  - **Quantize.** La onda avanza a saltos en el *tiempo*: solo 256 → 2 "muestras" por ciclo. Es el sonido de las
+    wavetables de los sintes digitales de los 80 y de las consolas. Con 2 escalones, un seno se vuelve cuadrada.
+  - **Bitcrush.** La onda avanza a saltos en la *amplitud*: de 8 bits a 1 bit. Suena "sucio", a videojuego. Con la
+    perilla baja solo añade una arenilla fina.
+- **Aliasing: cómo se controla aquí.** Deformar la fase *acelera* la lectura de la tabla. Por ejemplo, si una zona del
+  ciclo se lee 8 veces más rápido, sus armónicos suben 8 veces y pueden pasar de Nyquist y reflejarse. Undertow usa
+  tres técnicas a la vez:
+  1. **Mipmap por velocidad.** Se elige el nivel de la tabla para la lectura *más rápida* (la FM incluida), no para
+     la nota.
+  2. **polyBLEP / polyBLAMP.** Los saltos (el reinicio del Sync, los escalones) y los quiebres (los bordes del PWM,
+     la vuelta del Mirror) se suavizan justo en el instante en que ocurren, entre dos muestras.
+  3. **Oversampling ×2.** En cuanto hay algún warp o FM/RM, las fuentes se calculan al doble de la frecuencia de
+     muestreo. Un filtro *halfband* (100 dB de rechazo) quita todo lo que pasa de 20 kHz antes de volver a la
+     frecuencia del host.
+
+  Resultado medido (el peor caso, de C4 a C7): Sync −78 dB, PWM −80 dB, Mirror −92 dB, Quantize −82 dB, FM −72 dB.
+  Un sync "ingenuo" sin nada de esto da −27 dB: un silbido claramente audible. Hay tres excepciones:
+  - **Bend − al 100 %** llega a −62 dB: su curva frena y acelera muy bruscamente.
+  - **Bitcrush de una sierra** llega a −53 dB: cerca del salto de la sierra, la onda cruza un escalón y vuelve
+    dentro de una misma muestra.
+  - En **C8** con amounts extremos la lectura pasa de 30 kHz y ya no se puede limitar del todo (−53 a −79 dB).
+- **El precio: CPU.** Sin warp ni FM el sonido y el coste son los de la Fase 6. Con warp o FM, cada oscilador cuesta
+  el doble (oversampling). La FM clásica cuesta el doble otra vez, porque el modulador también se calcula aunque no
+  suene. Mide en tu PC: 8 notas con Sync ≈ 9 % de un núcleo; FM de 2 osciladores ≈ 14 %; Sync con 7 copias de
+  unison ≈ 20 %.
+- **Cambiar de modo no hace clic.** El modo de warp o de FM/RM cambia la onda de golpe, así que la voz baja el volumen
+  en 2.5 ms, cambia el modo en silencio y vuelve a subir: en total, un hueco de ~6 ms que no se percibe como corte.
+  Los *amounts* sí se pueden mover y modular libremente, sin huecos.
+
+### Qué hace cada control al sonido
+| Control | Qué se oye | En el analizador / osciloscopio |
+|---|---|---|
+| **Warp: Sync** | Un pico de "vocal" que sube con la perilla: "uaaau", agresivo, cortante. | Una montaña de armónicos que se desplaza hacia arriba; en el osciloscopio, varios ciclos rápidos "cortados" en cada ciclo de la nota. |
+| **Warp: Bend + / −** | Más brillo y "tensión" sin cambiar el tono; + suena más apretado y − más nasal (depende de la onda). | Aparecen armónicos nuevos; la forma se "inclina" hacia los bordes o hacia el centro. |
+| **Warp: PWM** | La onda se vuelve más fina y hueca a medida que se estrecha; con LFO, el clásico "coro" de los pads analógicos. | Un pulso estrecho seguido de una zona plana; el espectro se llena de armónicos. |
+| **Warp: Mirror** | Más hueco y simétrico, a órgano o a vocal "o". | La forma queda simétrica (la segunda mitad es la primera al revés) y cambia el reparto de armónicos. |
+| **Warp: Quantize** | De casi nada (arriba) a "8 bits" y a cuadrada (al 100 %). | Una escalera en el tiempo; muchos armónicos agudos nuevos. |
+| **Warp: Bitcrush** | Arenilla fina → suciedad de videojuego → distorsión dura. | Una escalera en la amplitud. |
+| **FM: Osc B / Sub / Noise** | Poco: más brillo, "vida". Medio: metal, campana (según la ratio). Mucho: ruido metálico, agresivo. Noise: arena y aire. Sub: gruñido grave. | Bandas laterales a distancias iguales alrededor de cada armónico; con ratio no entero, líneas "entre" los armónicos. |
+| **RM: Osc B / Sub / Noise** | Al 100 %: robótico, metálico, sin la nota original. Al 50 %: la nota con un halo metálico (AM). Noise: ruido con el ritmo de la nota. | La línea de la nota se parte en dos (suma y diferencia). |
+| **Destinos nuevos** | Env → Osc A Warp: sync que "se cierra" en cada nota. LFO → Osc A FM/RM: el metal "respira". Mod Wheel → Warp: control en vivo. | — |
+
+### Ejercicio de escucha guiado
+Montaje igual que en la Fase 6: en el canal del Mixer de Undertow, **Fruity Parametric EQ 2** (espectro) y
+**Wave Candy** con un preset de **osciloscopio**. Todo lo nuevo está en la pestaña **Warp y FM**. El dibujo de cada
+oscilador muestra la onda original (gris) y la deformada (naranja): mírala mientras mueves las perillas.
+
+1. **Sync.** Osc A: *Basic Shapes* **67 %** (sierra). Warp **Sync**, Amount **0 %**. Mantén **C4 (131 Hz)** y sube
+   Amount despacio hasta 100 %: el tono no cambia, pero un pico de timbre sube como una vocal ("uaaau"). En el EQ la
+   montaña de armónicos se desplaza. Fíjate en 25 %, 50 % y 75 %: el esclavo está en ×2, ×4 y ×8, el sonido se
+   "limpia" un instante y suena como una octava. Prueba lo mismo con el seno (Position 0 %).
+2. **Sync con envolvente.** Amount a **20 %**. Pestaña Modulación: Env 2 con Attack 1 ms, Decay **400 ms**, Sustain 0 %,
+   y ruta **Env 2 → Osc A Warp, +50 %**. Toca notas cortas: cada una empieza muy brillante y se "cierra". Es el
+   *sync lead* de los 80.
+3. **FM básica.** Quita la ruta. Osc A: *Basic Shapes* **0 %** (seno), Warp None. Osc B: *Basic Shapes* 0 %, **apagado**.
+   En Osc A, FM/RM: **FM: Osc B**. Mantén **A5 (440 Hz)** y sube FM Amount de 0 a **30 %**: el seno gana brillo, suena
+   más "vivo". Sigue a **50 %** (metálico) y **80 %** (agresivo). En el EQ aparecen líneas a 880, 1320, 1760 Hz…
+4. **Ratio.** FM Amount **40 %**. En la pestaña Osciladores cambia **Osc B**:
+   - **Octave +1** (ratio 2:1): sonido hueco, tipo clarinete.
+   - **Octave −1**: se oye una octava más grave y con cuerpo.
+   - Luego vuelve a Octave 0 y pon **Fine +30 ct**: el sonido se vuelve inarmónico, "desafinado", como una campana
+     rota. Cada ratio es un instrumento distinto.
+5. **Ring mod.** Osc B: Octave 0, **Semi +5**, Fine 0. En Osc A cambia a **RM: Osc B**, Amount **100 %**. Toca una
+   melodía: suena robótico y metálico, y la nota original ya no está. Baja a **50 %**: vuelve la nota, con un halo
+   metálico (AM).
+6. **Sub y ruido como moduladores.** Osc A (seno): **FM: Sub**, Amount 40 %. Deja el Sub **apagado**: sigue modulando.
+   Con Octave del sub en −1 se oye un gruñido grave. Luego **FM: Noise**, Amount **15 %**: el seno se vuelve "arenoso",
+   como una flauta con aire.
+7. **Los otros warps.** Osc A: *Basic Shapes* **100 %** (cuadrada), FM Off. Prueba:
+   - **PWM** (0 → 90 %: de cuadrada a pulso fino).
+   - **Mirror** (0 → 100 %).
+   - **Bend +** y **Bend −**.
+   - **Quantize** (100 → 50 → 0 %).
+   - **Bitcrush** (0 → 60 → 100 %).
+
+   Mira el dibujo naranja y el osciloscopio a la vez: son la misma forma.
+8. **Artefactos a buscar.**
+   - Cambiar el modo de Warp o de FM/RM con una nota sonando: se oye un micro-hueco de ~6 ms, pero **ningún clic**.
+   - Mover los Amounts, o modularlos con un LFO rápido: sin clics ni "zipper".
+   - Con un modo elegido y el Amount en 0 %, el sonido debe ser **idéntico** al de None/Off.
+   - En notas muy agudas (C7–C8) con Sync o Bend al máximo, escucha con atención por si aparece un "silbido" que no
+     sigue a la nota. Debería estar muy por debajo de lo audible.
+   - Sube el medidor de CPU de FL con acordes grandes y unison: el warp y la FM cuestan más.
+
+### Recetas
+**1. Sync lead de los 80 (synth-pop, 120 BPM)**
+1. Osc A: *Basic Shapes* **67 %** (sierra), Unison **3**, Detune **12 %**. Warp **Sync**, Amount **25 %**.
+2. Osc B: **On**, *Basic Shapes* **67 %**, Octave **−1**, Level **40 %** (cuerpo debajo del sync).
+3. Voices **1**. Env 1: Attack 3 ms, Decay 500 ms, Sustain **80 %**, Release 200 ms.
+4. Env 2: Attack 1 ms, Decay **350 ms**, Sustain **15 %**, Release 200 ms; ruta **Env 2 → Osc A Warp, +45 %**.
+5. LFO 1: *Sine*, Retrigger, Sync, Division **1/8**; ruta **LFO 1 → Osc A Warp, +5 %** (un leve "wah" rítmico).
+6. Filtro **On**, **Low Pass 12 dB**, Cutoff **6 kHz**, Resonance 10 %.
+7. Piano Roll: una melodía en corcheas entre **C5 y C6**.
+8. *Por qué funciona:*
+   - El sync añade un pico de timbre que la envolvente barre de arriba abajo en cada nota. El ataque suena brillante
+     y agresivo, y el resto de la nota, más redondo.
+   - El sync se queda en ratios no enteros casi todo el tiempo: ahí es donde tiene "mordida".
+   - La capa una octava abajo da cuerpo y el unison suave, anchura sin perder claridad.
+
+   Es el sonido de "Let's Go" (The Cars) y de muchos leads de los 80.
+
+**2. Campana FM (ambient, cine)**
+1. Osc A: *Basic Shapes* **0 %** (seno). FM/RM: **FM: Osc B**, Amount **35 %**.
+2. Osc B: **apagado**, *Basic Shapes* 0 %, Octave **+1**, Semi **+10** (ratio ≈ 3.56: inarmónico, "de metal").
+3. Voices **8**. Env 1: Attack **1 ms**, Decay **3 s**, Sustain **0 %**, Release **2.5 s**.
+4. Env 2: Attack 1 ms, Decay **1.2 s**, Sustain 0 %; ruta **Env 2 → Osc A FM/RM, +30 %**.
+5. Ruta 2: **Velocity → Osc A FM/RM, +15 %** (tocar fuerte = golpe más metálico).
+6. Piano Roll: notas sueltas entre **C5 y C7**, dejando espacio para que suenen.
+7. *Por qué funciona:*
+   - Una campana real tiene parciales inarmónicos: la ratio no entera los crea.
+   - Al golpear, una campana es muy brillante y los parciales agudos mueren primero: Env 2 baja el índice de FM
+     mientras la nota decae, y el sonido pasa de metálico a un tono casi puro.
+   - Velocity → FM imita cómo un golpe fuerte excita más armónicos.
+
+**3. Bajo FM con gruñido (dubstep / bass music, 140 BPM)**
+1. Osc A: *Basic Shapes* **0 %** (seno). FM/RM: **FM: Osc B**, Amount **30 %**.
+2. Osc B: **apagado**, *Basic Shapes* **67 %** (sierra: modular con una sierra da más armónicos), Octave **0**.
+3. Sub: **On**, *Sine*, Octave **−1**, Level **70 %** (la base limpia que no se mueve).
+4. Voices **1**. Env 1: Attack 2 ms, Decay 300 ms, Sustain **100 %**, Release 80 ms.
+5. LFO 1: *Sine*, Retrigger, **Sync**, Division **1/8**; ruta **LFO 1 → Osc A FM/RM, +25 %**.
+6. Filtro **On**, **Low Pass 24 dB**, Cutoff **1.5 kHz**, Resonance **30 %**, Drive **40 %**. Ruta 2:
+   **LFO 1 → Filter Cutoff, +15 %**.
+7. Piano Roll: notas largas en **F2 (43.7 Hz)** y **G2 (49 Hz)**, con alguna nota a la octava.
+8. *Por qué funciona:*
+   - La FM a ratio 1:1 mantiene el tono claro, y el LFO abre y cierra el índice a ritmo de corchea: el bajo "habla".
+   - El filtro con resonancia se mueve a la vez y acentúa ese movimiento, como una vocal.
+   - El sub mono sostiene la fundamental aunque la FM la debilite en algunos momentos (recuerda J₀ = 0 con β = 2.4).
+
+### Reto sin receta
+**El "growl" de riddim / dubstep.** En el dubstep moderno (riddim, tearout) los bajos "hablan": parecen decir
+"yoy-yoy" o "wow", y a la vez tienen un grave limpio y enorme.
+
+Tu reto, a **140 BPM**: un bajo en **F2 (43.7 Hz)** con un patrón de 1 compás donde:
+- el timbre cambie claramente de "vocal" varias veces (al menos 2 "sílabas" distintas por compás),
+- el grave no desaparezca ni tiemble cuando el timbre se mueve,
+- suene agresivo pero **sin clics** en ninguna nota,
+- y funcione en mono (el grave no puede depender del estéreo).
+
+Pista para empezar: esta fase te da tres formas de mover la "vocal": el Sync, la FM y el Position de *Vowels*.
+Inténtalo primero; las pistas vendrán después.
+
+### Vocabulario
+- **FM / PM (modulación de frecuencia / de fase).** Un oscilador mueve el tono (o la fase) de otro a velocidad de
+  audio. *Ejemplo:* el piano eléctrico del Yamaha DX7 (preset "E.PIANO 1"), omnipresente en las baladas de los 80.
+- **Portadora / moduladora.** La que se oye / la que la transforma. *Ejemplo:* en la campana de la receta 2, A es la
+  portadora y B (apagado) la moduladora.
+- **Ratio.** La relación de frecuencias entre moduladora y portadora; entera = armónico, no entera = inarmónico.
+  *Ejemplo:* los pianos eléctricos FM usan ratios enteras; las campanas y gongs, no enteras.
+- **Índice de modulación.** Cuánto modula la moduladora: más índice = más bandas laterales = más brillo y metal.
+  *Ejemplo:* el "golpe" brillante de un bajo FM de synth-pop que se apaga enseguida.
+- **Bandas laterales.** Las frecuencias nuevas que aparecen alrededor de la portadora. *Ejemplo:* el halo metálico de
+  un sonido de campana FM.
+- **Inarmónico.** Un sonido cuyos parciales no son múltiplos de una fundamental. *Ejemplo:* campanas de iglesia,
+  platillos, gongs.
+- **Ring mod.** Multiplicar dos señales: suma y diferencia de frecuencias. *Ejemplo:* la voz de los Daleks en
+  *Doctor Who*.
+- **AM (modulación de amplitud).** Mover el volumen a velocidad de audio. *Ejemplo:* el trémolo muy rápido de algunos
+  pedales de guitarra se vuelve un timbre "metálico" cuando pasa de ~20 Hz.
+- **Hard sync / maestro y esclavo.** Un oscilador que se reinicia con el ciclo de otro. *Ejemplo:* el lead de
+  "Let's Go" (The Cars, 1979).
+- **Warp / phase distortion.** Deformar la fase de lectura para cambiar el timbre. *Ejemplo:* los sintes Casio CZ de
+  los 80 hacían todo su sonido así.
+- **PWM (modulación de ancho de pulso).** Cambiar lo ancho del pulso de una onda cuadrada. *Ejemplo:* los pads y
+  cuerdas del Roland Juno-106.
+- **Bitcrush / profundidad de bits.** Reducir la resolución de amplitud. *Ejemplo:* la música de videojuegos de 8 bits
+  (chiptune).
+- **Oversampling.** Calcular a una frecuencia de muestreo más alta para que los armónicos tengan sitio antes de
+  reflejarse. *Ejemplo:* el botón "HQ" u "oversampling" de muchos plugins de distorsión.
+- **polyBLEP.** Una corrección pequeña alrededor de cada salto de la onda que la vuelve limitada en banda. *Ejemplo:*
+  la usan muchos osciladores "analógicos virtuales" para que una sierra aguda no silbe.
+
+### Retos completados
+- [ ] Reto Fase 7 — growl de riddim / dubstep
