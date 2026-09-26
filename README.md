@@ -6,8 +6,9 @@ llegar al nivel de sintes como Serum o Vital.
 
 ![Interfaz de Undertow Synth](docs/screenshot.png)
 
-> **Estado:** en desarrollo (fases 1–8 de 11 completadas). Ya suena y es
-> usable en un DAW, pero todavía no tiene presets. Ver la [hoja de ruta](#hoja-de-ruta).
+> **Estado:** en desarrollo (fases 1–8 de 11 completadas). Ya suena y es usable en un DAW, con efectos incluidos, pero
+> todavía no tiene presets y la interfaz es funcional (la definitiva llega en la fase 9). Ver la
+> [hoja de ruta](#hoja-de-ruta).
 
 ## Qué tiene hoy
 
@@ -29,8 +30,26 @@ llegar al nivel de sintes como Serum o Vital.
   delay estéreo o ping-pong (libre o sincronizado al tempo) y reverb algorítmica (red de 8 retardos realimentados).
 - **Polifonía de 1 a 16 voces** con robo de voces sin clics, pedal de sustain (CC64) y CC120/123.
 - **Envolvente ADSR** exponencial y sensibilidad a la velocity.
-- Correcto a 44.1, 48, 88.2 y 96 kHz y con cualquier tamaño de buffer. Validado con
+- **MIDI y host:** rueda de modulación (CC1) y aftertouch como fuentes de modulación; tempo y posición de la canción
+  del DAW para los LFOs y el delay sincronizados. Informa al DAW de la cola (release, reverb y delay) para que no se
+  corte al exportar.
+- **Interfaz en 5 pestañas** (Osciladores, Warp y FM, Filtro y Amp, Modulación, Efectos) con visores de la forma de
+  onda, del warp aplicado, de la curva del filtro y de los LFOs.
+- Correcto a 44.1, 48, 88.2 y 96 kHz y con cualquier tamaño de buffer, en estéreo o mono. Validado con
   [pluginval](https://github.com/Tracktion/pluginval) en strictness 10.
+
+### Cómo fluye la señal
+
+```
+ por cada nota (hasta 16 voces)                                           una vez, sobre la suma
+┌─────────────────────────────────────────────────────────────────┐   ┌──────────────────────────────┐
+│ Osc A ─┐  (unison, warp, FM/RM)                                 │   │                              │
+│ Osc B ─┼─► mezcla ─► filtro ─► amplitud (Env 1) ────────────────┼──►│ distorsión ─► chorus ─►      │──► Master
+│ Sub   ─┤                                                        │   │ delay ─► reverb              │
+│ Ruido ─┘   ▲ Env 2, Env 3, LFO 1, LFO 2, velocity, nota,        │   └──────────────────────────────┘
+│            │ rueda de modulación y aftertouch vía la matriz     │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Requisitos
 
@@ -66,7 +85,14 @@ Si `cmake` no se reconoce, usa la ruta completa (`"C:\Program Files\CMake\bin\cm
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Los tests (`tests/DspTests.cpp`) miden afinación, aliasing, respuesta del filtro, ausencia de clics y coste de CPU.
+Los tests (`tests/DspTests.cpp`) miden afinación, aliasing, respuesta del filtro, ausencia de clics, tiempos de los
+ecos y de la reverb, y coste de CPU, a las 4 frecuencias de muestreo. El ejecutable acepta opciones para iterar más
+rápido:
+
+```bash
+build/Release/UndertowTests.exe --fase8     # solo los tests de efectos (--fase7: warp y FM)
+build/Release/UndertowTests.exe --verbose   # detalle de cada medición
+```
 
 ## Usarlo
 
@@ -163,7 +189,10 @@ Resonance **25 %**, Drive **30 %**, Key Track **50 %** · Attack **2 ms**, Decay
 Release **60 ms**. Toca corcheas entre C3 y C4 (notación de FL).
 
 Para darle el "squelch" de un acid: Resonance **75 %** y, en la pestaña Modulación, Env 2 (Attack 1 ms, Decay 180 ms,
-Sustain 0 %) con la ruta **Env 2 → Filter Cutoff +40 %**.
+Sustain 0 %) con la ruta **Env 2 → Filter Cutoff +40 %**. Para terminarlo, en la pestaña Efectos: Distorsión **Tube**,
+Drive **40 %**, Tone **60 %**, y un Delay con Sync en **1/8 D**, Feedback **30 %**, Mix **15 %**.
+
+![Pestaña Efectos](docs/screenshot-efectos.png)
 
 Hay más recetas, ejercicios de escucha y vocabulario en **[APRENDIZAJE.md](APRENDIZAJE.md)**, el cuaderno de
 diseño sonoro del proyecto. Explica qué se oye con cada control y por qué.
@@ -179,6 +208,7 @@ Source/
   synth/              voces, gestión de polifonía, matriz de modulación, banco de wavetables y cadena de efectos
   gui/                visores propios (forma de onda, warp, curva del filtro y LFO)
 tests/                tests de DSP (ejecutable independiente, sin JUCE)
+APRENDIZAJE.md        cuaderno de diseño sonoro: conceptos, recetas, ejercicios y vocabulario de cada fase
 ```
 
 El DSP no depende de JUCE: se puede probar aislado. Dentro del hilo de audio no se reserva memoria ni se usan locks.
